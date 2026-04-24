@@ -372,7 +372,8 @@ bool AABBPhysics::isOnGround(EntityHandle e)
         return false;
 
     Vec3 o = m_entOrigin[e.index()];
-    Vec3 down = {0, 0, -2};
+    // Trace down a reasonable distance (100 units) to find ground
+    Vec3 down = {0, 0, -100.0f};
     TraceResult tr = trace(o, o + down, m_playerMins, m_playerMaxs);
     return tr.fraction < 1.0f;
 }

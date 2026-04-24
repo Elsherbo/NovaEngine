@@ -125,13 +125,21 @@ void Camera::update(const InputState &input, float dt)
         if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
             speed *= 3.f;
         
-        // Jump
-        bool onGround = phys->isOnGround(EntityHandle());
-        if ((input.keys[SDL_SCANCODE_SPACE]) && onGround)
+// Fallback ground if no collision detected - use spawn height - player height
+        float groundZ = m_position.z - 36.0f;
+        
+        if ((input.keys[SDL_SCANCODE_SPACE]) && (m_position.z >= groundZ + 1.0f))
         {
-            // Apply upward velocity - would need entity system
-            // For now, simple step up
-            m_position.z += 1.0f;
+            // Jump - reset vertical velocity
+            m_position.z += 30.0f;
+        }
+        
+        // Apply gravity - fall to ground level
+        if (m_position.z > groundZ)
+        {
+            m_position.z -= 9.8f * dt;
+            if (m_position.z < groundZ)
+                m_position.z = groundZ;  // Landed
         }
         
         // Use physics moveSlide - need entity handle
@@ -151,12 +159,6 @@ void Camera::update(const InputState &input, float dt)
             {
                 m_position = m_position + delta;
             }
-        }
-        
-        // Gravity - fall if not on ground
-        if (!onGround)
-        {
-            m_position.z -= 9.8f * dt;
         }
         
         return;
