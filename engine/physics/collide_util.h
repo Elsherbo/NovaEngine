@@ -18,9 +18,18 @@ namespace nova
 {
 
 // -----------------------------------------------------------------------
+// getComponent - get component by axis index
+// -----------------------------------------------------------------------
+inline float getComponent(const Vec3& v, int axis)
+{
+    if (axis == 0) return v.x;
+    if (axis == 1) return v.y;
+    return v.z;
+}
+
+// -----------------------------------------------------------------------
 // intersectRayAABB - ray vs axis-aligned box
 // Returns: true if ray intersects box, tMin/tMax are distances along ray
-// Based on: "An Efficient and Robust Ray–Box Intersection Algorithm"
 // -----------------------------------------------------------------------
 inline bool intersectRayAABB(const Vec3& rayOrigin, const Vec3& rayDir,
                             const Vec3& boxMins, const Vec3& boxMaxs,
@@ -31,18 +40,20 @@ inline bool intersectRayAABB(const Vec3& rayOrigin, const Vec3& rayDir,
 
     for (int axis = 0; axis < 3; ++axis)
     {
-        float axisOrigin = rayOrigin[axis];
-        float axisDir = rayDir[axis];
+        float axisOrigin = getComponent(rayOrigin, axis);
+        float axisDir = getComponent(rayDir, axis);
+        float boxMin = getComponent(boxMins, axis);
+        float boxMax = getComponent(boxMaxs, axis);
         
         if (std::abs(axisDir) < 1e-8f)
         {
-            if (axisOrigin < boxMins[axis] || axisOrigin > boxMaxs[axis])
+            if (axisOrigin < boxMin || axisOrigin > boxMax)
                 return false;
             continue;
         }
         
-        float t1 = (boxMins[axis] - axisOrigin) / axisDir;
-        float t2 = (boxMaxs[axis] - axisOrigin) / axisDir;
+        float t1 = (boxMin - axisOrigin) / axisDir;
+        float t2 = (boxMax - axisOrigin) / axisDir;
         
         if (t1 > t2)
         {
@@ -83,18 +94,20 @@ inline float intersectRayAABBFromPoints(const Vec3& start, const Vec3& end,
     
     for (int axis = 0; axis < 3; ++axis)
     {
-        float axisStart = start[axis];
-        float axisDir = rDir[axis];
+        float axisStart = getComponent(start, axis);
+        float axisDir = getComponent(rDir, axis);
+        float boxMin = getComponent(boxMins, axis);
+        float boxMax = getComponent(boxMaxs, axis);
         
         if (std::abs(axisDir) < 1e-8f)
         {
-            if (axisStart < boxMins[axis] || axisStart > boxMaxs[axis])
+            if (axisStart < boxMin || axisStart > boxMax)
                 return 1.0f;
             continue;
         }
         
-        float t1 = (boxMins[axis] - axisStart) / axisDir;
-        float t2 = (boxMaxs[axis] - axisStart) / axisDir;
+        float t1 = (boxMin - axisStart) / axisDir;
+        float t2 = (boxMax - axisStart) / axisDir;
         
         if (t1 > t2)
         {

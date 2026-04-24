@@ -19,3 +19,7 @@ add_test(NAME LogTests COMMAND test_log)
 add_executable(test_entity entities/test_entity.cpp)
 target_link_libraries(test_entity PRIVATE nova_entities)
 add_test(NAME EntityTests COMMAND test_entity)
+
+add_executable(test_collide physics/test_collide.cpp)
+target_link_libraries(test_collide PRIVATE nova_physics)
+add_test(NAME CollideTests COMMAND test_collide)
