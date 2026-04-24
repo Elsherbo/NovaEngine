@@ -47,7 +47,7 @@ public:
 
 private:
     std::vector<Entity>   m_entities;
-    std::vector<bool>   m_active;
+    std::vector<char>   m_active;
     std::vector<EntityID> m_freeList;
     size_t              m_freeCount = 0;
 

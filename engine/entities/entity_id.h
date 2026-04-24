@@ -21,7 +21,7 @@ namespace nova
 // -----------------------------------------------------------------------
 struct EntityID
 {
-    uint32_t bits = 0;
+    uint32_t bits = kInvalid;
 
     static constexpr size_t kIndexBits    = 15;
     static constexpr size_t kGenBits    = 16;
@@ -61,10 +61,10 @@ class EntityHandle
 {
     friend class EntityList;
 
-    EntityID m_id;
+    EntityID m_id = EntityID{EntityID::kInvalid};
 
 public:
-    EntityHandle() : m_id() {}
+    EntityHandle() { m_id.bits = EntityID::kInvalid; }
     explicit EntityHandle(EntityID id) : m_id(id) {}
 
     bool isValid() const { return m_id.isValid(); }

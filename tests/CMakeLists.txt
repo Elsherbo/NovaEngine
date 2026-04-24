@@ -15,3 +15,7 @@ add_test(NAME LogTests COMMAND test_log)
 # add_executable(test_bsp renderer/test_bsp.cpp)
 # target_link_libraries(test_bsp PRIVATE nova_engine)
 # add_test(NAME BSPTests COMMAND test_bsp)
+
+add_executable(test_entity entities/test_entity.cpp)
+target_link_libraries(test_entity PRIVATE nova_entities)
+add_test(NAME EntityTests COMMAND test_entity)

@@ -27,7 +27,8 @@ static constexpr size_t kMaxEntities = 32768;  // 2^15, fits in 15-bit index
 EntityList::EntityList()
 {
     m_entities.resize(kMaxEntities);
-    m_active.resize(kMaxEntities, false);
+    m_active.resize(kMaxEntities, 0);
+    m_freeList.resize(kMaxEntities);
 
     // Initialize free list
     for (int i = kMaxEntities - 1; i >= 0; --i)
@@ -66,7 +67,7 @@ EntityHandle EntityList::create(const char *classname)
     }
 
     // Mark as active
-    m_active[id.index()] = true;
+    m_active[id.index()] = 1;
 
     return EntityHandle(id);
 }
@@ -90,7 +91,7 @@ void EntityList::destroy(EntityHandle handle)
         return;  // stale handle
 
     // Free it
-    m_active[idx] = false;
+    m_active[idx] = 0;
 
     // Increment generation for safety
     uint16_t newGen = e.handle.generation() + 1;
