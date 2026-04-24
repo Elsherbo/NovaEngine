@@ -117,8 +117,9 @@ void Camera::update(const InputState &input, float dt)
         Vec3 fwd = getForward();
         Vec3 right = getRight();
         
-        if (input.keys[SDL_SCANCODE_W]) wishDir = wishDir + fwd;
-        if (input.keys[SDL_SCANCODE_S]) wishDir = wishDir - fwd;
+        // Swap forward/back to match camera direction
+        if (input.keys[SDL_SCANCODE_W]) wishDir = wishDir - fwd;
+        if (input.keys[SDL_SCANCODE_S]) wishDir = wishDir + fwd;
         if (input.keys[SDL_SCANCODE_D]) wishDir = wishDir + right;
         if (input.keys[SDL_SCANCODE_A]) wishDir = wishDir - right;
         
