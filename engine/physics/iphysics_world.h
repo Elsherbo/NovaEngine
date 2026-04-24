@@ -13,6 +13,7 @@
 #include "engine/core/math/vec.h"
 #include "engine/core/math/shapes.h"
 #include "engine/entities/entity_id.h"
+#include "engine/renderer/bsp/bsp.h"
 
 namespace nova
 {
@@ -21,8 +22,6 @@ namespace nova
 // Forward declarations
 // -----------------------------------------------------------------------
 class BSPMap;
-struct Entity;
-class EntityList;
 
 // -----------------------------------------------------------------------
 // Trace result

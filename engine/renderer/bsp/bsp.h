@@ -257,6 +257,9 @@ public:
     Vec3 getSpawnOrigin() const { return m_spawnOrigin; }
     Vec3 getSpawnAngles() const { return m_spawnAngles; }
 
+    // ---- FOR PHYSICS ACCESS ----
+    friend class AABBPhysics;
+
 private:
     bool loadLumps(const uint8_t *data, size_t size);
     void freeLumps();
