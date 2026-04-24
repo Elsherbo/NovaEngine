@@ -8,6 +8,8 @@ add_library(nova_entities STATIC
     entity_list.h
     entity_list.cpp
     igame_module.h
+    game_dll_loader.h
+    game_dll_loader.cpp
 )
 
 target_include_directories(nova_entities PUBLIC

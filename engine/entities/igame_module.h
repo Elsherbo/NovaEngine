@@ -22,6 +22,7 @@ namespace nova
 class IPhysicsWorld;
 class IAudioSystem;
 class INetworkSystem;
+struct IPlatform;
 
 // -----------------------------------------------------------------------
 // IGameModule - pure virtual interface
