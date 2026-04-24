@@ -24,8 +24,8 @@ target_link_libraries(nova_engine PUBLIC nova_renderer)
 # target_link_libraries(nova_engine PUBLIC nova_physics)
 
 # Entities
-# add_subdirectory(entities)
-# target_link_libraries(nova_engine PUBLIC nova_entities)
+add_subdirectory(entities)
+target_link_libraries(nova_engine PUBLIC nova_entities)
 
 # Audio
 # add_subdirectory(audio)
