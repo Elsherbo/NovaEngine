@@ -17,6 +17,7 @@
 #include "engine/core/camera.h"
 #include "engine/platform/iplatform.h"
 #include "engine/core/math/common.h"
+#include "engine/physics/iphysics_world.h"
 #include <SDL3/SDL_scancode.h>
 
 namespace nova
@@ -106,27 +107,56 @@ void Camera::update(const InputState &input, float dt)
     // ---- Physics mode (if physics world is set) ----
     if (m_physics)
     {
-        // Simple physics: apply movement to position directly
-        // Note: Full physics integration needs Entity + BSP collision
-        // For now, continue with noclip-style movement
+        // Cast back to IPhysicsWorld
+        IPhysicsWorld *phys = (IPhysicsWorld*)m_physics;
         
-        float speed = m_moveSpeed * dt;
+        // Get movement input
+        Vec3 wishDir = {0, 0, 0};
+        float speed = m_moveSpeed;
+        
+        Vec3 fwd = getForward();
+        Vec3 right = getRight();
+        
+        if (input.keys[SDL_SCANCODE_W]) wishDir = wishDir + fwd;
+        if (input.keys[SDL_SCANCODE_S]) wishDir = wishDir - fwd;
+        if (input.keys[SDL_SCANCODE_D]) wishDir = wishDir + right;
+        if (input.keys[SDL_SCANCODE_A]) wishDir = wishDir - right;
+        
         if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
             speed *= 3.f;
-
-        Vec3 fwd   = getForward();
-        Vec3 right = getRight();
-
-        if (input.keys[SDL_SCANCODE_W]) m_position = m_position + fwd   * speed;
-        if (input.keys[SDL_SCANCODE_S]) m_position = m_position - fwd   * speed;
-        if (input.keys[SDL_SCANCODE_D]) m_position = m_position + right * speed;
-        if (input.keys[SDL_SCANCODE_A]) m_position = m_position - right * speed;
-
-        // Jump (when grounded)
-        if (input.keys[SDL_SCANCODE_SPACE] && m_grounded)
+        
+        // Jump
+        bool onGround = phys->isOnGround(EntityHandle());
+        if ((input.keys[SDL_SCANCODE_SPACE]) && onGround)
         {
-            m_position.y += 200.f * dt;  // jump velocity
-            m_grounded = false;
+            // Apply upward velocity - would need entity system
+            // For now, simple step up
+            m_position.z += 1.0f;
+        }
+        
+        // Use physics moveSlide - need entity handle
+        // For camera-only, trace and apply
+        if (wishDir.lengthSq() > 0.001f)
+        {
+            Vec3 delta = wishDir * speed * dt;
+            TraceResult tr = phys->trace(m_position, m_position + delta,
+                                          {-16, -16, -36}, {16, 16, 36});
+            
+            if (tr.fraction < 1.0f)
+            {
+                // Hit - slide along surface
+                m_position = tr.endPos;
+            }
+            else
+            {
+                m_position = m_position + delta;
+            }
+        }
+        
+        // Gravity - fall if not on ground
+        if (!onGround)
+        {
+            m_position.z -= 9.8f * dt;
         }
         
         return;
