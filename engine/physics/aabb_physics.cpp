@@ -284,6 +284,9 @@ TraceResult AABBPhysics::traceEntity(EntityHandle skip, const Vec3& start, const
     return trace(start, end, mins, maxs);
 }
 
+// Step-up constants
+static constexpr float kStepHeight = 18.0f;  // Quake step height
+
 TraceResult AABBPhysics::moveSlide(EntityHandle e, const Vec3& wishDir, float, float wishSpeed)
 {
     if (!m_entOrigin || !m_entVelocity)
@@ -292,10 +295,37 @@ TraceResult AABBPhysics::moveSlide(EntityHandle e, const Vec3& wishDir, float, f
         return r;
     }
 
-    float dt = 1.0f / 60.0f;  // 60 Hz physics
+    float dt = 1.0f / 60.0f;
     Vec3 velocity = m_entVelocity[e.index()] + wishDir * wishSpeed;
     Vec3 pos = m_entOrigin[e.index()];
     Vec3 vel = velocity;
+
+    // ---- Step-up: try to step over small obstacles ----
+    // First test: can we move at ground level?
+    Vec3 groundDelta = vel * dt;
+    float groundDist = groundDelta.length();
+    
+    if (groundDist > kMinMoveDist)
+    {
+        TraceResult groundTr = traceWorld(pos, groundDelta, groundDist, m_playerMins, m_playerMaxs);
+        
+        // If blocked at ground level, try stepping up
+        if (groundTr.fraction < 1.0f && isOnGround(e))
+        {
+            // Try at knee height (above step height)
+            Vec3 kneePos = pos;
+            kneePos.z += kStepHeight;
+            
+            TraceResult kneeTr = traceWorld(kneePos, groundDelta, groundDist, m_playerMins, m_playerMaxs);
+            
+            // If we can pass at knee height, step up
+            if (kneeTr.fraction >= 1.0f)
+            {
+                // Step up first
+                pos.z += kStepHeight;
+            }
+        }
+    }
 
     for (int iter = 0; iter < kMaxIterations; ++iter)
     {
