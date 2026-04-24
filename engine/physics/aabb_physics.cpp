@@ -358,7 +358,15 @@ float AABBPhysics::getGroundElevation(EntityHandle e)
 {
     if (!m_entOrigin)
         return -1e10f;
-    return m_entOrigin[e.index()].z;
+
+    Vec3 origin = m_entOrigin[e.index()];
+    Vec3 down = origin + Vec3{0, 0, -100.0f};
+    TraceResult tr = trace(origin, down, m_playerMins, m_playerMaxs);
+    
+    if (tr.fraction < 1.0f)
+        return tr.endPos.z;
+    
+    return origin.z - 100.0f;
 }
 
 void AABBPhysics::setGravity(float g)
