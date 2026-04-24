@@ -103,7 +103,36 @@ void Camera::update(const InputState &input, float dt)
                        static_cast<float>(input.mouseDeltaY));
     }
 
-    // ---- Speed modifier: Shift = ×3 ----
+    // ---- Physics mode (if physics world is set) ----
+    if (m_physics)
+    {
+        // Simple physics: apply movement to position directly
+        // Note: Full physics integration needs Entity + BSP collision
+        // For now, continue with noclip-style movement
+        
+        float speed = m_moveSpeed * dt;
+        if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
+            speed *= 3.f;
+
+        Vec3 fwd   = getForward();
+        Vec3 right = getRight();
+
+        if (input.keys[SDL_SCANCODE_W]) m_position = m_position + fwd   * speed;
+        if (input.keys[SDL_SCANCODE_S]) m_position = m_position - fwd   * speed;
+        if (input.keys[SDL_SCANCODE_D]) m_position = m_position + right * speed;
+        if (input.keys[SDL_SCANCODE_A]) m_position = m_position - right * speed;
+
+        // Jump (when grounded)
+        if (input.keys[SDL_SCANCODE_SPACE] && m_grounded)
+        {
+            m_position.y += 200.f * dt;  // jump velocity
+            m_grounded = false;
+        }
+        
+        return;
+    }
+
+    // ---- Fallback: Noclip mode (original behavior) ----
     float speed = m_moveSpeed * dt;
     if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
         speed *= 3.f;

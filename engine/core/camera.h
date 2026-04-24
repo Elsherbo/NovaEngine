@@ -32,6 +32,10 @@ public:
 
     void update(const InputState &input, float dt);
 
+    // Physics integration - set by engine
+    void setPhysicsWorld(void *world) { m_physics = world; }
+    void *getPhysicsWorld() const { return m_physics; }
+
     Vec3 getPosition() const { return m_position; }
     Quat getRotation() const { return m_rotation; }
     Mat4 getViewMatrix() const;
@@ -69,6 +73,9 @@ private:
 
     float m_moveSpeed = 400.f;    // raised from 200: Q2 maps are large
     float m_lookSpeed = 0.08f;
+
+    void *m_physics = nullptr;  // IPhysicsWorld*
+    bool m_grounded = false;
 };
 
 } // namespace nova
