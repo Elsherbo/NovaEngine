@@ -20,8 +20,8 @@ add_subdirectory(renderer)
 target_link_libraries(nova_engine PUBLIC nova_renderer)
 
 # Physics
-# add_subdirectory(physics)
-# target_link_libraries(nova_engine PUBLIC nova_physics)
+add_subdirectory(physics)
+target_link_libraries(nova_engine PUBLIC nova_physics)
 
 # Entities
 add_subdirectory(entities)
