@@ -23,6 +23,8 @@
 #include "engine/renderer/irender_backend.h"
 #include "engine/renderer/bsp/bsp.h"
 #include "engine/renderer/gl/gl_backend.h"
+#include "engine/physics/iphysics_world.h"
+#include "engine/physics/aabb_physics.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
 // Let SDL3 handle the entry point - it will call our main()
@@ -116,6 +118,7 @@ private:
     IRenderBackend *m_renderer = nullptr;
     Camera       *m_camera     = nullptr;
     BSPMap       *m_bsp        = nullptr;
+    IPhysicsWorld *m_physics  = nullptr;
 
     struct PerFrameUBO
     {
@@ -275,10 +278,13 @@ bool Engine::init(const char *bspPath)
 
             fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
                     spawn.x, spawn.y, spawn.z);
+
+            // ---- Create physics world with BSP ----
+            m_physics = new AABBPhysics();
+            m_physics->setWorld(m_bsp);
+            m_camera->setPhysicsWorld(m_physics);
         }
     }
-
-    // Build debug geometry (used when no BSP)
     buildDebugScene();
 
     m_lastTime = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
