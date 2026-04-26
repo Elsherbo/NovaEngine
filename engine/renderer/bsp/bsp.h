@@ -47,9 +47,11 @@
 #include <string>
 
 #include "engine/core/math/vec.h"
+#include "engine/core/math/mat4.h"
 #include "engine/renderer/irender_backend.h"
 #include "engine/platform/iplatform.h"
 #include "engine/renderer/bsp/ibsp_collision.h"
+#include "engine/core/asset_fs.h"
 
 namespace nova
 {
@@ -224,6 +226,11 @@ namespace nova
         int value;
         char textureName[32];
         int nextTexinfo;
+        // Populated at upload time (best-effort).
+        int texWidth = 128;
+        int texHeight = 128;
+        TextureHandle diffuse = INVALID_TEXTURE;
+        SamplerHandle sampler = INVALID_SAMPLER;
     };
 
     struct BSPFace
@@ -296,9 +303,12 @@ namespace nova
     public:
         ~BSPMap();
 
+        void setAssetFS(AssetFS* fs) { m_assets = fs; }
         bool load(IPlatform *platform, const char *path);
         void buildGeometry();
         void uploadToGPU(IRenderBackend *backend);
+        void releaseGPU(IRenderBackend *backend);
+        void setViewProj(const Mat4& vp) { m_viewProj = vp; m_hasViewProj = true; }
         void render(IRenderBackend *backend);
 
         Vec3 getSpawnOrigin() const { return m_spawnOrigin; }
@@ -334,6 +344,7 @@ namespace nova
         // ---- Parsed lumps ----
         std::string m_path;
         IPlatform *m_platform = nullptr;
+        AssetFS* m_assets = nullptr; // non-owning
         std::vector<Vec3> m_vertices;
         std::vector<BSPPlane> m_planes;
         std::vector<BSPEdge> m_edges;
@@ -381,9 +392,22 @@ namespace nova
             BufferHandle vertexBuffer = INVALID_BUFFER;
             BufferHandle indexBuffer = INVALID_BUFFER;
             int indexCount = 0;
+            Vec3 boundsMin = Vec3::zero();
+            Vec3 boundsMax = Vec3::zero();
+            struct DrawBatch
+            {
+                TextureHandle tex = INVALID_TEXTURE;
+                SamplerHandle samp = INVALID_SAMPLER;
+                int firstIndex = 0;
+                int indexCount = 0;
+            };
+            std::vector<DrawBatch> batches;
         };
         std::vector<RenderChunk> m_chunks;
         ShaderHandle m_shader = INVALID_SHADER;
+        Mat4 m_viewProj = Mat4::identity();
+        bool m_hasViewProj = false;
+        IRenderBackend* m_gpuBackend = nullptr; // non-owning
 
         // FIX 11: Single lightmap atlas instead of one texture per face.
         // Stores all face lightmaps packed into a 4096x4096 RGBA8 texture.

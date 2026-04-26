@@ -12,15 +12,74 @@
 
 #include "engine/renderer/bsp/bsp.h"
 #include "engine/renderer/irender_backend.h"
+#include "engine/core/image_load.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <cfloat>
 #include <algorithm>
+#include <unordered_map>
+#include <array>
+#include <unordered_set>
 
 namespace nova
 {
+
+namespace
+{
+    struct FrustumPlanes
+    {
+        // plane equation: n.x*x + n.y*y + n.z*z + d >= 0 means inside
+        float p[6][4]{};
+    };
+
+    static FrustumPlanes extractFrustum(const Mat4& m)
+    {
+        FrustumPlanes f{};
+        auto M = [&](int r, int c) { return m.col[c][r]; };
+
+        // Left:  row3 + row0
+        f.p[0][0] = M(3,0) + M(0,0); f.p[0][1] = M(3,1) + M(0,1); f.p[0][2] = M(3,2) + M(0,2); f.p[0][3] = M(3,3) + M(0,3);
+        // Right: row3 - row0
+        f.p[1][0] = M(3,0) - M(0,0); f.p[1][1] = M(3,1) - M(0,1); f.p[1][2] = M(3,2) - M(0,2); f.p[1][3] = M(3,3) - M(0,3);
+        // Bottom:row3 + row1
+        f.p[2][0] = M(3,0) + M(1,0); f.p[2][1] = M(3,1) + M(1,1); f.p[2][2] = M(3,2) + M(1,2); f.p[2][3] = M(3,3) + M(1,3);
+        // Top:   row3 - row1
+        f.p[3][0] = M(3,0) - M(1,0); f.p[3][1] = M(3,1) - M(1,1); f.p[3][2] = M(3,2) - M(1,2); f.p[3][3] = M(3,3) - M(1,3);
+        // Near:  row3 + row2
+        f.p[4][0] = M(3,0) + M(2,0); f.p[4][1] = M(3,1) + M(2,1); f.p[4][2] = M(3,2) + M(2,2); f.p[4][3] = M(3,3) + M(2,3);
+        // Far:   row3 - row2
+        f.p[5][0] = M(3,0) - M(2,0); f.p[5][1] = M(3,1) - M(2,1); f.p[5][2] = M(3,2) - M(2,2); f.p[5][3] = M(3,3) - M(2,3);
+
+        // normalize planes
+        for (int i = 0; i < 6; ++i)
+        {
+            float nx = f.p[i][0], ny = f.p[i][1], nz = f.p[i][2];
+            float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+            if (len > 1e-6f)
+            {
+                f.p[i][0] /= len; f.p[i][1] /= len; f.p[i][2] /= len; f.p[i][3] /= len;
+            }
+        }
+        return f;
+    }
+
+    static bool aabbInFrustum(const FrustumPlanes& f, const Vec3& bmin, const Vec3& bmax)
+    {
+        for (int i = 0; i < 6; ++i)
+        {
+            const float nx = f.p[i][0], ny = f.p[i][1], nz = f.p[i][2], d = f.p[i][3];
+            // positive vertex for this normal
+            const float px = (nx >= 0.f) ? bmax.x : bmin.x;
+            const float py = (ny >= 0.f) ? bmax.y : bmin.y;
+            const float pz = (nz >= 0.f) ? bmax.z : bmin.z;
+            if (nx * px + ny * py + nz * pz + d < 0.f)
+                return false;
+        }
+        return true;
+    }
+}
 
 // Per-chunk GPU upload limits (controls VRAM per draw call, not total geometry)
 constexpr size_t kChunkMaxVerts   =  500'000;
@@ -60,10 +119,23 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
 
     const BSPRawHeader *hdr = reinterpret_cast<const BSPRawHeader *>(data);
 
-    // Accept "IBSP" (vanilla Q2/KEX) or "QBSP" (some community tools)
+    // Accept "IBSP" (Quake II / KEX) or "QBSP" (some community tools).
+    // If this fails, try to recognize other common BSP formats so the user
+    // gets a useful error message.
     if (memcmp(hdr->magic, "IBSP", 4) != 0 &&
         memcmp(hdr->magic, "QBSP", 4) != 0)
     {
+        // Quake 1 BSP starts with a 32-bit version integer (no magic).
+        // The most common version is 29 (0x1D).
+        const uint32_t v = *reinterpret_cast<const uint32_t*>(data);
+        if (v == 29u)
+        {
+            fprintf(stderr,
+                    "BSPMap: unsupported BSP format (Quake 1 BSP v29). "
+                    "This loader currently supports Quake II BSP v38/v46 only.\n");
+            return false;
+        }
+
         fprintf(stderr, "BSPMap: wrong magic '%.4s'\n", hdr->magic);
         return false;
     }
@@ -619,7 +691,18 @@ void BSPMap::buildGeometry()
 
             BSPVertexPacked vtx;
             vtx.pos[0] = pos.x; vtx.pos[1] = pos.y; vtx.pos[2] = pos.z;
-            vtx.uv[0]  = worldU; vtx.uv[1] = worldV;
+            // Normalize to texture space so sampling works with real images.
+            // Quake-style mapping uses worldU/V in texels; dividing by texture size gives UVs.
+            if (ti && ti->texWidth > 0 && ti->texHeight > 0)
+            {
+                vtx.uv[0] = worldU / (float)ti->texWidth;
+                vtx.uv[1] = worldV / (float)ti->texHeight;
+            }
+            else
+            {
+                vtx.uv[0] = worldU / 128.0f;
+                vtx.uv[1] = worldV / 128.0f;
+            }
             vtx.lmUV[0] = lmU;  vtx.lmUV[1] = lmV;
             vtx.normal[0] = faceNormal.x;
             vtx.normal[1] = faceNormal.y;
@@ -800,10 +883,11 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
     td.width      = atlasW;
     td.height     = atlasH;
     td.format     = TextureFormat::RGB8;
-    td.minFilter  = TextureFilter::Linear;
+    td.minFilter  = TextureFilter::Trilinear;
     td.magFilter  = TextureFilter::Linear;
     td.wrapU      = TextureWrap::Clamp;
     td.wrapV      = TextureWrap::Clamp;
+    td.mipLevels  = 2;
     td.initialData = atlas.data();
 
     m_lmAtlasHandle  = backend->createTexture(td);
@@ -813,8 +897,240 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
 // ---------------------------------------------------------------------------
 void BSPMap::uploadToGPU(IRenderBackend *backend)
 {
+    // Re-upload path: release old GPU resources first.
+    releaseGPU(backend);
+    m_gpuBackend = backend;
+
     // Step 1: Pack lightmap atlas (sets face.atlasX/Y/hasAtlas).
     uploadLightmapAtlas(backend);
+
+    // Step 1.5: Load diffuse textures referenced by texinfo (best-effort).
+    // This is intentionally simple: look for TGA files under a nearby "textures/" folder.
+    std::unordered_map<std::string, TextureHandle> texCache;
+    std::unordered_map<std::string, std::pair<int,int>> sizeCache;
+
+    // Quake2 WAL textures are indexed color and rely on the global palette
+    // stored in pics/colormap.pcx (last 769 bytes: 0x0C + 256*RGB).
+    std::array<uint8_t, 768> q2Palette{};
+    bool hasQ2Palette = false;
+    if (m_assets)
+    {
+        std::vector<uint8_t> colormap;
+        if (m_assets->readAllBytes("pics/colormap.pcx", colormap) &&
+            colormap.size() >= 769 &&
+            colormap[colormap.size() - 769] == 12)
+        {
+            std::memcpy(q2Palette.data(), colormap.data() + (colormap.size() - 768), 768);
+            hasQ2Palette = true;
+        }
+    }
+    if (!hasQ2Palette)
+    {
+        // Fallback grayscale palette (keeps WALs visible if colormap missing).
+        for (int i = 0; i < 256; ++i)
+        {
+            q2Palette[i * 3 + 0] = (uint8_t)i;
+            q2Palette[i * 3 + 1] = (uint8_t)i;
+            q2Palette[i * 3 + 2] = (uint8_t)i;
+        }
+    }
+
+    auto makeSolidTexture = [&](uint8_t r, uint8_t g, uint8_t b) -> TextureHandle
+    {
+        uint8_t px[3] = {r, g, b};
+        TextureDesc td{};
+        td.type = TextureType::Texture2D;
+        td.width = td.height = 1;
+        td.format = TextureFormat::RGB8;
+        td.minFilter = TextureFilter::Nearest; // nearest mip for classic look
+        td.magFilter = TextureFilter::Nearest;
+        td.wrapU = TextureWrap::Repeat;
+        td.wrapV = TextureWrap::Repeat;
+        td.mipLevels = 2;
+        td.initialData = px;
+        return backend->createTexture(td);
+    };
+
+    auto hashColor = [&](const char* s) -> std::array<uint8_t,3>
+    {
+        uint32_t h = 2166136261u;
+        for (const char* p = s; p && *p; ++p)
+            h = (h ^ (uint8_t)*p) * 16777619u;
+        uint8_t r = (uint8_t)(50 + (h & 0x7Fu));
+        uint8_t g = (uint8_t)(50 + ((h >> 8) & 0x7Fu));
+        uint8_t b = (uint8_t)(50 + ((h >> 16) & 0x7Fu));
+        return {r,g,b};
+    };
+
+    SamplerHandle defaultSampler = INVALID_SAMPLER;
+    {
+        TextureDesc sd{};
+        // Diffuse sampler: Quake-style nearest filtering.
+        sd.minFilter = TextureFilter::Nearest;
+        sd.magFilter = TextureFilter::Nearest;
+        sd.wrapU = TextureWrap::Repeat;
+        sd.wrapV = TextureWrap::Repeat;
+        defaultSampler = backend->createSampler(sd);
+    }
+
+    auto tryLoadImage = [&](const std::string& logicalPath, TextureHandle& outTex, int& outW, int& outH) -> bool
+    {
+        ImageRGBA8 img;
+        std::string err;
+
+        if (m_assets)
+        {
+            std::vector<uint8_t> bytes;
+            if (!m_assets->readAllBytes(logicalPath, bytes))
+                return false;
+            if (!loadImageRGBA8FromMemory(bytes.data(), bytes.size(), img, &err))
+                return false;
+        }
+        else
+        {
+            // Fallback to direct filesystem reads (dev-only path).
+            if (!loadImageRGBA8FromFile(logicalPath.c_str(), img, &err))
+                return false;
+        }
+
+        TextureDesc td{};
+        td.type = TextureType::Texture2D;
+        td.width = img.width;
+        td.height = img.height;
+        td.format = TextureFormat::RGBA8;
+        td.minFilter = TextureFilter::Nearest;
+        td.magFilter = TextureFilter::Nearest;
+        td.wrapU = TextureWrap::Repeat;
+        td.wrapV = TextureWrap::Repeat;
+        td.mipLevels = 2;
+        td.initialData = img.rgba.data();
+        outTex = backend->createTexture(td);
+        outW = img.width;
+        outH = img.height;
+        return outTex != INVALID_TEXTURE;
+    };
+
+    auto tryLoadWal = [&](const std::string& logicalPath, TextureHandle& outTex, int& outW, int& outH) -> bool
+    {
+        std::vector<uint8_t> bytes;
+        if (m_assets)
+        {
+            if (!m_assets->readAllBytes(logicalPath, bytes))
+                return false;
+        }
+        else
+        {
+            // Filesystem fallback path.
+            FILE* f = fopen(logicalPath.c_str(), "rb");
+            if (!f) return false;
+            fseek(f, 0, SEEK_END);
+            long sz = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (sz <= 0) { fclose(f); return false; }
+            bytes.resize((size_t)sz);
+            const size_t rd = fread(bytes.data(), 1, (size_t)sz, f);
+            fclose(f);
+            if (rd != (size_t)sz) return false;
+        }
+
+        auto readI32 = [&](size_t off) -> int32_t
+        {
+            if (off + 4 > bytes.size()) return 0;
+            const uint8_t* p = bytes.data() + off;
+            return (int32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+        };
+
+        // Quake2 miptex wal header:
+        // name[32], width(4), height(4), offsets[4](16), animname[32], flags, contents, value
+        if (bytes.size() < 100) return false;
+        const int w = readI32(32);
+        const int h = readI32(36);
+        const int ofs0 = readI32(40);
+        if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return false;
+        if (ofs0 <= 0) return false;
+        const size_t mip0Size = (size_t)w * (size_t)h;
+        if ((size_t)ofs0 + mip0Size > bytes.size()) return false;
+
+        std::vector<uint8_t> rgba(mip0Size * 4);
+        const uint8_t* src = bytes.data() + (size_t)ofs0;
+        for (size_t i = 0; i < mip0Size; ++i)
+        {
+            const uint8_t idx = src[i];
+            rgba[i * 4 + 0] = q2Palette[idx * 3 + 0];
+            rgba[i * 4 + 1] = q2Palette[idx * 3 + 1];
+            rgba[i * 4 + 2] = q2Palette[idx * 3 + 2];
+            rgba[i * 4 + 3] = 255;
+        }
+
+        TextureDesc td{};
+        td.type = TextureType::Texture2D;
+        td.width = w;
+        td.height = h;
+        td.format = TextureFormat::RGBA8;
+        td.minFilter = TextureFilter::Nearest;
+        td.magFilter = TextureFilter::Nearest;
+        td.wrapU = TextureWrap::Repeat;
+        td.wrapV = TextureWrap::Repeat;
+        td.mipLevels = 2;
+        td.initialData = rgba.data();
+        outTex = backend->createTexture(td);
+        outW = w;
+        outH = h;
+        return outTex != INVALID_TEXTURE;
+    };
+
+    auto getTextureForName = [&](const char* texName, int& outW, int& outH) -> TextureHandle
+    {
+        if (!texName || texName[0] == '\0')
+        {
+            outW = outH = 128;
+            return makeSolidTexture(180, 180, 180);
+        }
+
+        const std::string key(texName);
+        if (auto it = texCache.find(key); it != texCache.end())
+        {
+            auto sz = sizeCache[key];
+            outW = sz.first; outH = sz.second;
+            return it->second;
+        }
+
+        // Typical Quake2 mapping: "textures/<name>.(wal|tga|png|jpg)"
+        TextureHandle tex = INVALID_TEXTURE;
+        int w = 128, h = 128;
+
+        {
+            const char* exts[] = { ".wal", ".tga", ".png", ".jpg", ".jpeg" };
+            for (const char* ext : exts)
+            {
+                const std::string p = std::string("textures/") + key + ext;
+                if ((std::strcmp(ext, ".wal") == 0 && tryLoadWal(p, tex, w, h)) ||
+                    (std::strcmp(ext, ".wal") != 0 && tryLoadImage(p, tex, w, h)))
+                    break;
+            }
+        }
+
+        if (tex == INVALID_TEXTURE)
+        {
+            auto c = hashColor(texName);
+            tex = makeSolidTexture(c[0], c[1], c[2]);
+            w = h = 128;
+        }
+
+        texCache[key] = tex;
+        sizeCache[key] = {w, h};
+        outW = w; outH = h;
+        return tex;
+    };
+
+    for (auto& ti : m_texInfos)
+    {
+        int w = 128, h = 128;
+        ti.diffuse = getTextureForName(ti.textureName, w, h);
+        ti.sampler = defaultSampler;
+        ti.texWidth = w;
+        ti.texHeight = h;
+    }
 
     // Step 2: Build geometry — full, no truncation.
     buildGeometry();
@@ -836,7 +1152,10 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
     chunkVerts.reserve(kChunkMaxVerts);
     chunkIndices.reserve(kChunkMaxIndices);
 
-    auto flushChunk = [&]()
+    // We also build draw batches so we can bind diffuse textures per group.
+    std::vector<RenderChunk::DrawBatch> batches;
+
+    auto flushChunkWithBatches = [&]()
     {
         if (chunkVerts.empty()) return;
 
@@ -857,15 +1176,37 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
         rc.indexBuffer     = backend->createBuffer(ibDesc);
 
         rc.indexCount = (int)chunkIndices.size();
+        rc.batches = batches;
+
+        // Compute chunk AABB for frustum culling.
+        Vec3 bmin{ FLT_MAX, FLT_MAX, FLT_MAX };
+        Vec3 bmax{ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+        for (const auto& v : chunkVerts)
+        {
+            bmin.x = std::min(bmin.x, v.pos[0]); bmin.y = std::min(bmin.y, v.pos[1]); bmin.z = std::min(bmin.z, v.pos[2]);
+            bmax.x = std::max(bmax.x, v.pos[0]); bmax.y = std::max(bmax.y, v.pos[1]); bmax.z = std::max(bmax.z, v.pos[2]);
+        }
+        rc.boundsMin = bmin;
+        rc.boundsMax = bmax;
         m_chunks.push_back(rc);
 
         chunkVerts.clear();
         chunkIndices.clear();
+        batches.clear();
     };
 
     for (const Surface &surf : m_surfaces)
     {
         if (surf.indexCount <= 0) continue;
+
+        const BSPFace& face = (surf.faceIndex >= 0 && surf.faceIndex < (int)m_faces.size())
+            ? m_faces[surf.faceIndex]
+            : m_faces[0];
+        const BSPTexInfo* ti = (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size())
+            ? &m_texInfos[face.texinfo]
+            : nullptr;
+        const TextureHandle tex = ti ? ti->diffuse : INVALID_TEXTURE;
+        const SamplerHandle samp = ti ? ti->sampler : INVALID_SAMPLER;
 
         // Use explicit firstVertex and vertCount from Surface (not derived from index array)
         uint32_t globalBase = surf.firstVertex;
@@ -879,7 +1220,7 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
             (chunkVerts.size()   + vertCount            > kChunkMaxVerts ||
              chunkIndices.size() + (size_t)surf.indexCount > kChunkMaxIndices))
         {
-            flushChunk();
+            flushChunkWithBatches();
         }
 
         // Remap: subtract global base, add local (chunk) base.
@@ -888,14 +1229,30 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
         for (uint32_t v = 0; v < vertCount; ++v)
             chunkVerts.push_back(m_verticesPacked[globalBase + v]);
 
+        const int batchStart = (int)chunkIndices.size();
         for (int i = 0; i < surf.indexCount; ++i)
         {
             uint32_t remapped = m_indicesRaw[surf.indexOffset + i] - globalBase + localBase;
             chunkIndices.push_back(remapped);
         }
+
+        // Merge into batches (contiguous indices with same texture).
+        if (!batches.empty() && batches.back().tex == tex && batches.back().samp == samp)
+        {
+            batches.back().indexCount += surf.indexCount;
+        }
+        else
+        {
+            RenderChunk::DrawBatch b{};
+            b.tex = tex;
+            b.samp = samp;
+            b.firstIndex = batchStart;
+            b.indexCount = surf.indexCount;
+            batches.push_back(b);
+        }
     }
 
-    flushChunk();
+    flushChunkWithBatches();
 
     // Tally totals for logging
     m_totalVertexCount = (int)m_verticesPacked.size();
@@ -914,7 +1271,48 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
 // ---------------------------------------------------------------------------
 BSPMap::~BSPMap()
 {
+    // Best-effort cleanup if engine didn't explicitly release.
+    if (m_gpuBackend)
+        releaseGPU(m_gpuBackend);
     freeLumps();
+}
+
+// ---------------------------------------------------------------------------
+void BSPMap::releaseGPU(IRenderBackend *backend)
+{
+    if (!backend) return;
+
+    // Destroy chunk buffers.
+    for (auto& c : m_chunks)
+    {
+        if (c.vertexBuffer != INVALID_BUFFER) backend->destroyBuffer(c.vertexBuffer);
+        if (c.indexBuffer != INVALID_BUFFER) backend->destroyBuffer(c.indexBuffer);
+        c.vertexBuffer = INVALID_BUFFER;
+        c.indexBuffer = INVALID_BUFFER;
+        c.batches.clear();
+    }
+    m_chunks.clear();
+
+    // Destroy lightmap atlas resources.
+    if (m_lmAtlasHandle != INVALID_TEXTURE) backend->destroyTexture(m_lmAtlasHandle);
+    if (m_lmAtlasSampler != INVALID_SAMPLER) backend->destroySampler(m_lmAtlasSampler);
+    m_lmAtlasHandle = INVALID_TEXTURE;
+    m_lmAtlasSampler = INVALID_SAMPLER;
+
+    // Destroy unique diffuse textures/samplers.
+    std::unordered_set<uint64_t> texSeen;
+    std::unordered_set<uint64_t> sampSeen;
+    for (auto& ti : m_texInfos)
+    {
+        if (ti.diffuse != INVALID_TEXTURE && texSeen.insert((uint64_t)ti.diffuse).second)
+            backend->destroyTexture(ti.diffuse);
+        if (ti.sampler != INVALID_SAMPLER && sampSeen.insert((uint64_t)ti.sampler).second)
+            backend->destroySampler(ti.sampler);
+        ti.diffuse = INVALID_TEXTURE;
+        ti.sampler = INVALID_SAMPLER;
+    }
+
+    m_gpuBackend = nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -927,14 +1325,35 @@ void BSPMap::render(IRenderBackend *backend)
     if (m_lmAtlasHandle != INVALID_TEXTURE)
         backend->bindTexture(m_lmAtlasHandle, m_lmAtlasSampler, 0);
 
+    const bool doCull = m_hasViewProj;
+    FrustumPlanes fr{};
+    if (doCull)
+        fr = extractFrustum(m_viewProj);
+
     // Draw all chunks
     for (const auto &chunk : m_chunks)
     {
         if (chunk.vertexBuffer == INVALID_BUFFER || chunk.indexBuffer == INVALID_BUFFER)
             continue;
+        if (doCull && !aabbInFrustum(fr, chunk.boundsMin, chunk.boundsMax))
+            continue;
         backend->bindVertexBuffer(chunk.vertexBuffer, 0, &kLayoutBSP);
         backend->bindIndexBuffer(chunk.indexBuffer);
-        backend->drawIndexed(chunk.indexCount, 0);
+
+        // Draw per-texture batches (slot 1 = uDiffuse)
+        if (!chunk.batches.empty())
+        {
+            for (const auto& b : chunk.batches)
+            {
+                if (b.tex != INVALID_TEXTURE)
+                    backend->bindTexture(b.tex, b.samp, 1);
+                backend->drawIndexed(b.indexCount, b.firstIndex);
+            }
+        }
+        else
+        {
+            backend->drawIndexed(chunk.indexCount, 0);
+        }
     }
 }
 

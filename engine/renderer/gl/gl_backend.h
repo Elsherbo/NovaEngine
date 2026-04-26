@@ -71,9 +71,9 @@ public:
     void clearColor(float r, float g, float b, float a) override;
     void clearDepth(float depth) override;
     void draw(int firstVertex, int vertexCount) override;
-    void drawIndexed(int indexCount, int baseVertex) override;
+    void drawIndexed(int indexCount, int firstIndex) override;
     void drawInstanced(int vertexCount, int instanceCount) override;
-    void drawIndexedInstanced(int indexCount, int instanceCount, int baseVertex) override;
+    void drawIndexedInstanced(int indexCount, int instanceCount, int firstIndex) override;
 
     int getWidth() const override { return m_width; }
     int getHeight() const override { return m_height; }

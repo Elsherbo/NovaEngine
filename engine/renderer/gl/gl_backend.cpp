@@ -699,9 +699,10 @@ void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayo
         glDrawArrays(GL_TRIANGLES, firstVertex, vertexCount);
     }
 
-    void GLBackend::drawIndexed(int indexCount, int /*baseVertex*/)
+    void GLBackend::drawIndexed(int indexCount, int firstIndex)
     {
-        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr);
+        const intptr_t offsetBytes = (intptr_t)firstIndex * (intptr_t)sizeof(uint32_t);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, (const void*)offsetBytes);
     }
 
     void GLBackend::drawInstanced(int vertexCount, int instanceCount)
@@ -709,10 +710,11 @@ void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayo
         glDrawArraysInstanced(GL_TRIANGLES, 0, vertexCount, instanceCount);
     }
 
-    void GLBackend::drawIndexedInstanced(int indexCount, int instanceCount, int)
+    void GLBackend::drawIndexedInstanced(int indexCount, int instanceCount, int firstIndex)
     {
+        const intptr_t offsetBytes = (intptr_t)firstIndex * (intptr_t)sizeof(uint32_t);
         glDrawElementsInstanced(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT,
-                                nullptr, instanceCount);
+                                (const void*)offsetBytes, instanceCount);
     }
 
     IRenderBackend *createRenderBackend()

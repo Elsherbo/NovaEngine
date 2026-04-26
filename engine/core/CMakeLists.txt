@@ -37,4 +37,14 @@ target_sources(nova_core PRIVATE
     camera.cpp
 )
 
+# Image (minimal loaders)
+target_sources(nova_core PRIVATE
+    image_tga.h
+    image_tga.cpp
+    image_load.h
+    image_load.cpp
+    asset_fs.h
+    asset_fs.cpp
+)
+
 # Engine main loop (executable target, not library — handled separately)

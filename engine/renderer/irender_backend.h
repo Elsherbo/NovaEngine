@@ -307,9 +307,10 @@ namespace nova
         virtual void clearColor(float r, float g, float b, float a) = 0;
         virtual void clearDepth(float depth) = 0;
         virtual void draw(int firstVertex, int vertexCount) = 0;
-        virtual void drawIndexed(int indexCount, int baseVertex) = 0;
+        // Second parameter is the first index within the bound index buffer.
+        virtual void drawIndexed(int indexCount, int firstIndex) = 0;
         virtual void drawInstanced(int vertexCount, int instanceCount) = 0;
-        virtual void drawIndexedInstanced(int indexCount, int instanceCount, int baseVertex) = 0;
+        virtual void drawIndexedInstanced(int indexCount, int instanceCount, int firstIndex) = 0;
 
         // ---- Queries ----
         virtual int getWidth() const = 0;

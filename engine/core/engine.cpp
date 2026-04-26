@@ -57,6 +57,7 @@
 #include "engine/physics/iphysics_world.h"
 #include "engine/physics/aabb_physics.h"
 #include "engine/entities/entity.h"
+#include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
 // Let SDL3 handle the entry point - it will call our main()
@@ -68,6 +69,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 
 namespace nova
 {
@@ -118,6 +121,7 @@ in vec3 vWorldPos;
 in vec4 vColor;
 
 layout(binding = 0) uniform sampler2D uLightmap;
+layout(binding = 1) uniform sampler2D uDiffuse;
 uniform int uDebugView;
 
 out vec4 fragColor;
@@ -164,7 +168,7 @@ void main()
         return;
     }
 
-    vec3 base = vec3(0.78, 0.80, 0.86) * vColor.rgb;
+    vec3 base = texture(uDiffuse, vUv).rgb * vColor.rgb;
     vec3 lit = max(lm, vec3(0.22));
     fragColor = vec4(base * lit, 1.0);
 }
@@ -176,7 +180,7 @@ void main()
     class Engine
     {
     public:
-        bool init(const char *bspPath);
+        bool init(const char *bspPath, const char *gameDir);
         void shutdown();
         int run();
 
@@ -190,6 +194,7 @@ void main()
         Camera *m_camera = nullptr;
         BSPMap *m_bsp = nullptr;
         IPhysicsWorld *m_physics = nullptr;
+        AssetFS m_assets;
 
         struct PerFrameUBO
         {
@@ -219,7 +224,7 @@ void main()
     };
 
     // -----------------------------------------------------------------------
-    bool Engine::init(const char *bspPath)
+    bool Engine::init(const char *bspPath, const char *gameDir)
     {
         Logger &log = Logger::instance();
         log.setLevel(LogLevel::Info);
@@ -325,11 +330,55 @@ void main()
         // ---- Camera ----
         m_camera = new Camera();
         m_camera->setAspect((float)wd.width / (float)wd.height);
+        // Depth precision fix: a tiny near plane (0.1) with very large far plane
+        // causes z-fighting on coplanar/near-coplanar BSP surfaces.
+        m_camera->setNearFar(2.0f, 4096.0f);
+
+        // ---- Assets ----
+        auto dirOf = [](const std::string& p) -> std::string
+        {
+            const size_t s = p.find_last_of("/\\");
+            return (s == std::string::npos) ? std::string{} : p.substr(0, s);
+        };
+
+        // Mount BSP-local roots first so map-pack textures override base assets.
+        // Example:
+        //   <root>/maps/foo.bsp
+        //   <root>/textures/...
+        if (bspPath && bspPath[0] != '\0')
+        {
+            const std::string bspFile = bspPath;
+            const std::string bspDir = dirOf(bspFile);   // .../maps
+            const std::string bspRoot = dirOf(bspDir);   // .../<map-pack-root>
+            if (!bspRoot.empty())
+            {
+                m_assets.mountDirectory(bspRoot);
+                fprintf(stdout, "Assets: mounted BSP root '%s'\n", bspRoot.c_str());
+            }
+            if (!bspDir.empty())
+            {
+                m_assets.mountDirectory(bspDir);
+                fprintf(stdout, "Assets: mounted BSP dir '%s'\n", bspDir.c_str());
+            }
+        }
+
+        if (gameDir && gameDir[0] != '\0')
+        {
+            m_assets.mountDirectory(gameDir);
+            fprintf(stdout, "Assets: mounted game dir '%s'\n", gameDir);
+            std::string pak0 = std::string(gameDir);
+            if (!pak0.empty() && pak0.back() != '\\' && pak0.back() != '/')
+                pak0 += "\\";
+            pak0 += "pak0.pak";
+            if (m_assets.mountQuake2Pak(pak0))
+                fprintf(stdout, "Assets: mounted Quake2 pak0 '%s'\n", pak0.c_str());
+        }
 
         // ---- BSP + Physics ----
         if (bspPath && bspPath[0] != '\0')
         {
             m_bsp = new BSPMap();
+            m_bsp->setAssetFS(&m_assets);
             if (!m_bsp->load(m_platform, bspPath))
             {
                 log.warn("Engine: BSP load failed — running without map");
@@ -514,6 +563,8 @@ void main()
     {
         if (m_bsp)
         {
+            if (m_renderer)
+                m_bsp->releaseGPU(m_renderer);
             delete m_bsp;
             m_bsp = nullptr;
         }
@@ -681,6 +732,7 @@ void main()
 
         if (m_bsp)
         {
+            m_bsp->setViewProj(viewProj);
             m_bsp->render(m_renderer);
         }
         else
@@ -706,9 +758,15 @@ void main()
 int main(int argc, char *argv[])
 {
     const char *bspPath = (argc > 1) ? argv[1] : "";
+    const char *gameDir = "";
+    for (int i = 1; i < argc; ++i)
+    {
+        if (strcmp(argv[i], "-gameDir") == 0 && i + 1 < argc)
+            gameDir = argv[i + 1];
+    }
 
     nova::Engine engine;
-    if (!engine.init(bspPath))
+    if (!engine.init(bspPath, gameDir))
         return 1;
 
     int result = engine.run();
