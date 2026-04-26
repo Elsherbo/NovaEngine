@@ -12,12 +12,43 @@
 //      The old explicit bsp->buildGeometry() call was removed —
 //      calling it before uploadToGPU() meant lightmap atlas UVs
 //      were not yet computed, leaving all lmUVs at 0.
-//   2. [NEW] SDL_SetRelativeMouseMode(SDL_TRUE) added after window
-//      creation. Without this, SDL reports absolute mouse positions
-//      and mouseDeltaX/Y are always 0 (camera never turns).
+//   2. [NEW] SDL_SetRelativeMouseMode replaces SDL_CaptureMouse.
+//      SDL_CaptureMouse only captures events outside the window —
+//      it does NOT deliver relative deltas. SDL3 relative mouse mode
+//      is SDL_SetWindowRelativeMouseMode(win, true). Without this
+//      mouseDeltaX/Y are absolute coords, camera never turns.
+//   3. [FIX] m_camera->setPhysicsWorld(m_physics) was missing from
+//      the BSP init block, so the camera always ran in noclip mode.
+//   4. [FIX] setEntityStorage() must be called before any trace or
+//      setOrigin/setVelocity calls so the storage pointer is valid.
+//   5. [FIX] Spawn floor trace: sweep the player hull down from
+//      well above the BSP spawn origin to land cleanly on the floor
+//      instead of relying on a hardcoded Y offset.
+//   6. [FIX] Spawn solid escape: if the spawn point (after floor
+//      trace) is still inside solid geometry (testSolid() returns
+//      true), nudge the candidate upward in 8-unit steps until
+//      clear.  This handles Q2 maps where info_player_start is
+//      embedded in a brush.  Without this the player falls through
+//      the floor or gets stuck inside walls on load.
+//   7. [FIX] Fragment shader: removed extra diffuse term. Q2 lightmaps
+//      already encode all scene lighting; multiplying by an additional
+//      dot(normal, sunDir) term was double-lighting and crushing all
+//      dark surfaces to near-black. Correct formula: baseColor * lm.
+//   8. [FIX] render(): bindUniformBuffer(m_uboBuffer, 0) added every
+//      frame. It was only called once in init(). After the BSP draw
+//      changes GL state the UBO binding at slot 0 goes stale; the
+//      next frame's shader reads garbage viewProj and produces black.
+//   9. [FIX] render(): removed bare glDisable(GL_CULL_FACE). It was
+//      undoing the GL_CULL_FACE setup from GLBackend::createSwapChain
+//      on every frame, causing back faces to render (inside-out rooms).
+//  10. [FIX] Removed manual SDL_GL_CreateContext + gladLoadGL from
+//      engine.cpp init. GLBackend::createSwapChain already creates the
+//      context and loads GLAD. Having two SDL_GL_CreateContext calls
+//      left a dangling unused context from the engine side.
 // ============================================================
 
 #include "engine/core/log.h"
+#include "engine/renderer/irender_backend.h"
 #include "engine/core/camera.h"
 #include "engine/platform/iplatform.h"
 #include "engine/renderer/irender_backend.h"
@@ -25,6 +56,7 @@
 #include "engine/renderer/gl/gl_backend.h"
 #include "engine/physics/iphysics_world.h"
 #include "engine/physics/aabb_physics.h"
+#include "engine/entities/entity.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
 // Let SDL3 handle the entry point - it will call our main()
@@ -40,10 +72,10 @@
 namespace nova
 {
 
-// =====================================================================
-//  GLSL Sources
-// =====================================================================
-static const char *g_vsSource = R"(
+    // =====================================================================
+    //  GLSL Sources
+    // =====================================================================
+    static const char *g_vsSource = R"(
 #version 450 core
 
 layout(location = 0) in vec3 aPosition;
@@ -76,7 +108,7 @@ void main()
 }
 )";
 
-static const char *g_fsSource = R"(
+    static const char *g_fsSource = R"(
 #version 450 core
 
 in vec2 vUv;
@@ -86,390 +118,585 @@ in vec3 vWorldPos;
 in vec4 vColor;
 
 layout(binding = 0) uniform sampler2D uLightmap;
+uniform int uDebugView;
 
 out vec4 fragColor;
 
 void main()
 {
-    vec3 baseColor = vColor.rgb;
-    vec3 lm = texture(uLightmap, vLmUv).rgb;
-    if (dot(lm, lm) < 0.001) lm = vec3(1.0); // white fallback for no-lightmap faces
-    float diff = max(dot(normalize(vNormal), normalize(vec3(0.5, 1.0, 0.3))), 0.3);
-    fragColor = vec4(baseColor * lm * diff, 1.0);
-}
-)";
-
-// =====================================================================
-//  Engine
-// =====================================================================
-class Engine
-{
-public:
-    bool init(const char *bspPath);
-    void shutdown();
-    int  run();
-
-private:
-    void update(float dt);
-    void render();
-    void buildDebugScene();
-
-    IPlatform    *m_platform   = nullptr;
-    IRenderBackend *m_renderer = nullptr;
-    Camera       *m_camera     = nullptr;
-    BSPMap       *m_bsp        = nullptr;
-    IPhysicsWorld *m_physics  = nullptr;
-
-    struct PerFrameUBO
+    // lmUv.x < 0 is the sentinel for "no lightmap" faces.
+    if (vLmUv.x < 0.0)
     {
-        float viewProj[16];
-        float camPos[3];
-        float pad0;
-    } m_ubo{};
-
-    BufferHandle   m_uboBuffer     = INVALID_BUFFER;
-    ShaderHandle   m_shader        = INVALID_SHADER;
-    BufferHandle   m_debugVertex   = INVALID_BUFFER;
-    BufferHandle   m_debugIndex    = INVALID_BUFFER;
-    TextureHandle  m_whiteTexture  = INVALID_TEXTURE;
-    SamplerHandle  m_whiteSampler  = INVALID_SAMPLER;
-    int m_debugIndexCount = 0;
-
-    bool m_running = false;
-    double m_lastTime = 0.0;
-    int   m_fps       = 0;
-    int   m_frames    = 0;
-    double m_fpstimer = 0.0;
-};
-
-// -----------------------------------------------------------------------
-bool Engine::init(const char *bspPath)
-{
-    Logger &log = Logger::instance();
-    log.setLevel(LogLevel::Info);
-    log.setFile(stdout);
-    log.info("Nova Engine Phase 1 initializing...");
-
-    // ---- Platform ----
-    m_platform = createPlatform();
-    if (!m_platform)
-    {
-        log.error("Engine: failed to create platform");
-        return false;
-    }
-
-    WindowDesc wd{};
-    wd.title = "Nova Engine";
-    wd.width = 1280;
-    wd.height = 720;
-
-    if (!m_platform->createWindow(wd))
-    {
-        log.error("Engine: failed to create window");
-        return false;
-    }
-
-    m_platform->setMouseGrab(true);
-    m_platform->showCursor(false);
-
-    SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
-
-    // ---- OpenGL Context ----
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-
-    SDL_GLContext glCtx = SDL_GL_CreateContext(win);
-    if (!glCtx)
-    {
-        fprintf(stderr, "Engine: SDL_GL_CreateContext failed: %s\n", SDL_GetError());
-        log.error("Engine: GL context creation failed");
-        return false;
-    }
-
-    SDL_GL_MakeCurrent(win, glCtx);
-
-    // Show window and enable relative mouse mode
-    SDL_ShowWindow(win);
-    SDL_RaiseWindow(win);
-    SDL_SetWindowRelativeMouseMode(win, true);
-
-    // ---- Renderer ----
-    m_renderer = createRenderBackend();
-    if (!m_renderer)
-    {
-        log.error("Engine: failed to create render backend");
-        return false;
-    }
-
-    if (!m_renderer->initialize(m_platform))
-    {
-        log.error("Engine: render backend init failed");
-        return false;
-    }
-
-    // ---- Swap chain ----
-    if (!m_renderer->createSwapChain(win, wd))
-    {
-        log.error("Engine: createSwapChain failed");
-        return false;
-    }
-
-    // ---- Shader ----
-    ShaderDesc sd{};
-    sd.vertexSource   = g_vsSource;
-    sd.fragmentSource = g_fsSource;
-    m_shader = m_renderer->createShader(sd);
-    if (m_shader == INVALID_SHADER)
-    {
-        log.error("Engine: failed to compile shader");
-        return false;
-    }
-
-    // ---- UBO ----
-    BufferDesc uboDesc{};
-    uboDesc.type  = BufferType::Uniform;
-    uboDesc.usage = BufferUsage::Dynamic;
-    uboDesc.size  = sizeof(PerFrameUBO);
-    m_uboBuffer   = m_renderer->createBuffer(uboDesc);
-    m_renderer->bindUniformBuffer(m_uboBuffer, 0);
-
-    // ---- White lightmap texture (fallback when no BSP / no atlas) ----
-    TextureDesc td{};
-    td.type      = TextureType::Texture2D;
-    td.width     = td.height = 1;
-    td.format    = TextureFormat::RGB8;
-    td.minFilter = TextureFilter::Linear;
-    td.magFilter = TextureFilter::Linear;
-    uint8_t white[3] = {255, 255, 255};
-    td.initialData = white;
-    m_whiteTexture = m_renderer->createTexture(td);
-    m_whiteSampler = m_renderer->createSampler(td);
-
-    // ---- Camera ----
-    m_camera = new Camera();
-    m_camera->setAspect((float)wd.width / (float)wd.height);
-
-    // ---- BSP ----
-    // FIX 1: uploadToGPU() owns the full pipeline:
-    //   atlas packing → buildGeometry (with correct lm UVs) → GPU upload.
-    // Do NOT call buildGeometry() separately before uploadToGPU().
-    if (bspPath && bspPath[0] != '\0')
-    {
-        m_bsp = new BSPMap();
-        if (!m_bsp->load(m_platform, bspPath))
-        {
-            log.warn("Engine: BSP load failed — running without map");
-            delete m_bsp;
-            m_bsp = nullptr;
-        }
+        // In lightmap-debug modes, highlight missing baked data.
+        if (uDebugView != 0)
+            fragColor = vec4(1.0, 0.0, 1.0, 1.0);
         else
-        {
-            m_bsp->uploadToGPU(m_renderer);   // atlas + geometry + GPU upload
-
-            Vec3 spawn = m_bsp->getSpawnOrigin();
-            m_camera->setPosition(spawn);
-
-            if (m_bsp->getSpawnAngles().y != 0.f)
-                m_camera->setYaw(m_bsp->getSpawnAngles().y);
-
-            fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
-                    spawn.x, spawn.y, spawn.z);
-
-            // ---- Create physics world with BSP ----
-            m_physics = new AABBPhysics();
-            m_physics->setWorld(m_bsp);
-            m_camera->setPhysicsWorld(m_physics);
-        }
-    }
-    buildDebugScene();
-
-    m_lastTime = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
-    m_running  = true;
-    log.info("Engine: Phase 1 ready");
-    return true;
-}
-
-// -----------------------------------------------------------------------
-void Engine::buildDebugScene()
-{
-    struct Vertex
-    {
-        float pos[3];
-        float uv[2];
-        float lmUV[2];
-        float n[3];
-        uint8_t c[4];
-    };
-    static_assert(sizeof(Vertex) == 44, "Vertex stride must be 44 bytes");
-
-    Vertex boxVerts[] = {
-        // Floor
-        {{-10, 0, -10}, {0,0}, {0,0}, {0,1,0}, {140,140,140,255}},
-        {{ 10, 0, -10}, {1,0}, {0,0}, {0,1,0}, {140,140,140,255}},
-        {{ 10, 0,  10}, {1,1}, {0,0}, {0,1,0}, {140,140,140,255}},
-        {{-10, 0,  10}, {0,1}, {0,0}, {0,1,0}, {140,140,140,255}},
-        // Back wall
-        {{-10,  0, -10}, {0,0}, {0,0}, {0,0,1}, {100,100,140,255}},
-        {{ 10,  0, -10}, {1,0}, {0,0}, {0,0,1}, {100,100,140,255}},
-        {{ 10,  8, -10}, {1,1}, {0,0}, {0,0,1}, {100,100,140,255}},
-        {{-10,  8, -10}, {0,1}, {0,0}, {0,0,1}, {100,100,140,255}},
-        // Ceiling
-        {{-10,  8, -10}, {0,0}, {0,0}, {0,-1,0}, {80,80,80,255}},
-        {{ 10,  8, -10}, {1,0}, {0,0}, {0,-1,0}, {80,80,80,255}},
-        {{ 10,  8,  10}, {1,1}, {0,0}, {0,-1,0}, {80,80,80,255}},
-        {{-10,  8,  10}, {0,1}, {0,0}, {0,-1,0}, {80,80,80,255}},
-    };
-
-    uint32_t boxIndices[] = {
-        0, 1, 2,  0, 2, 3,
-        4, 5, 6,  4, 6, 7,
-        8, 9,10,  8,10,11,
-    };
-
-    BufferDesc vbDesc{};
-    vbDesc.type = BufferType::Vertex;
-    vbDesc.usage = BufferUsage::Static;
-    vbDesc.size = sizeof(boxVerts);
-    vbDesc.initialData = boxVerts;
-    m_debugVertex = m_renderer->createBuffer(vbDesc);
-
-    BufferDesc ibDesc{};
-    ibDesc.type = BufferType::Index;
-    ibDesc.usage = BufferUsage::Static;
-    ibDesc.size = sizeof(boxIndices);
-    ibDesc.initialData = boxIndices;
-    m_debugIndex = m_renderer->createBuffer(ibDesc);
-
-    m_debugIndexCount = (int)(sizeof(boxIndices) / sizeof(boxIndices[0]));
-}
-
-// -----------------------------------------------------------------------
-void Engine::shutdown()
-{
-    if (m_bsp) { delete m_bsp; m_bsp = nullptr; }
-    delete m_camera; m_camera = nullptr;
-
-    if (m_renderer) { m_renderer->shutdown(); delete m_renderer; m_renderer = nullptr; }
-    if (m_platform) { m_platform->destroyWindow(); delete m_platform; m_platform = nullptr; }
-
-    SDL_Quit();
-    Logger::instance().info("Engine: shutdown complete");
-}
-
-// -----------------------------------------------------------------------
-int Engine::run()
-{
-    const double targetDt = 1.0 / 60.0;
-    const double maxDt    = 0.25;
-
-    while (m_running)
-    {
-        double now = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
-        double dt  = now - m_lastTime;
-        m_lastTime = now;
-        if (dt > maxDt) dt = maxDt;
-
-        m_fpstimer += dt;
-        m_frames++;
-        if (m_fpstimer >= 1.0)
-        {
-            m_fps = m_frames;
-            m_frames = 0;
-            m_fpstimer = 0.0;
-            char title[128];
-            snprintf(title, sizeof(title), "Nova Engine [%d FPS]", m_fps);
-            m_platform->setWindowTitle(title);
-        }
-
-        update((float)dt);
-        render();
-
-        if (dt < targetDt)
-        {
-            double sleepMs = (targetDt - dt) * 1000.0 - 1.0;
-            if (sleepMs > 0.0) SDL_Delay((Uint32)sleepMs);
-        }
-    }
-
-    return 0;
-}
-
-// -----------------------------------------------------------------------
-void Engine::update(float dt)
-{
-    InputState input{};
-    if (!m_platform->pollInput(input))
-    {
-        m_running = false;
+            fragColor = vec4(0.75, 0.75, 0.75, 1.0);
         return;
     }
 
-    if (input.keys[SDL_SCANCODE_ESCAPE])
-        m_running = false;
+    // Sample the lightmap atlas.
+    // NOTE: this renderer currently does not sample BSP diffuse textures yet,
+    // so lightmap-only output looks almost black. Use a neutral albedo +
+    // ambient floor so maps remain readable until texture loading is added.
+    vec3 lm = texture(uLightmap, vLmUv).rgb;
+    lm = clamp(lm * 2.0, 0.0, 1.0);
+    lm = pow(lm, vec3(1.0 / 2.2));
 
-    if (input.keys[SDL_SCANCODE_F1])
+    if (uDebugView == 1)
     {
-        static int cycles = 0;
-        cycles++;
-        SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
-        if (cycles % 2 == 0)
+        // Grayscale baked-light visualization.
+        float g = dot(lm, vec3(0.2126, 0.7152, 0.0722));
+        fragColor = vec4(vec3(g), 1.0);
+        return;
+    }
+    if (uDebugView == 2)
+    {
+        // Exposure-boosted lightmap view (reveals very dark bakes).
+        vec3 boosted = vec3(1.0) - exp(-lm * 10.0);
+        fragColor = vec4(boosted, 1.0);
+        return;
+    }
+    if (uDebugView == 3)
+    {
+        // UV debug: visualize atlas coordinates directly.
+        fragColor = vec4(fract(vLmUv.x), fract(vLmUv.y), 0.0, 1.0);
+        return;
+    }
+
+    vec3 base = vec3(0.78, 0.80, 0.86) * vColor.rgb;
+    vec3 lit = max(lm, vec3(0.22));
+    fragColor = vec4(base * lit, 1.0);
+}
+)";
+
+    // =====================================================================
+    //  Engine
+    // =====================================================================
+    class Engine
+    {
+    public:
+        bool init(const char *bspPath);
+        void shutdown();
+        int run();
+
+    private:
+        void update(float dt);
+        void render();
+        void buildDebugScene();
+
+        IPlatform *m_platform = nullptr;
+        IRenderBackend *m_renderer = nullptr;
+        Camera *m_camera = nullptr;
+        BSPMap *m_bsp = nullptr;
+        IPhysicsWorld *m_physics = nullptr;
+
+        struct PerFrameUBO
         {
-            m_platform->setMouseGrab(true);
-            m_platform->showCursor(false);
-            SDL_SetWindowRelativeMouseMode(win, true);
+            float viewProj[16];
+            float camPos[3];
+            float pad0;
+        } m_ubo{};
+
+        BufferHandle m_uboBuffer = INVALID_BUFFER;
+        ShaderHandle m_shader = INVALID_SHADER;
+        BufferHandle m_debugVertex = INVALID_BUFFER;
+        BufferHandle m_debugIndex = INVALID_BUFFER;
+        TextureHandle m_whiteTexture = INVALID_TEXTURE;
+        SamplerHandle m_whiteSampler = INVALID_SAMPLER;
+        int m_debugIndexCount = 0;
+        int m_debugView = 0; // 0=lit, 1=lightmap gray, 2=lightmap boosted, 3=lm uv
+
+        // External storage for physics (wired to camera entity slot 0)
+        Vec3 m_cameraPosition = {0, 0, 0};
+        Vec3 m_cameraVelocity = {0, 0, 0};
+
+        bool m_running = false;
+        double m_lastTime = 0.0;
+        int m_fps = 0;
+        int m_frames = 0;
+        double m_fpstimer = 0.0;
+    };
+
+    // -----------------------------------------------------------------------
+    bool Engine::init(const char *bspPath)
+    {
+        Logger &log = Logger::instance();
+        log.setLevel(LogLevel::Info);
+        log.setFile(stdout);
+        log.info("Nova Engine Phase 1 initializing...");
+
+        // ---- Platform ----
+        m_platform = createPlatform();
+        if (!m_platform)
+        {
+            log.error("Engine: failed to create platform");
+            return false;
+        }
+
+        WindowDesc wd{};
+        wd.title = "Nova Engine";
+        wd.width = 1280;
+        wd.height = 720;
+
+        if (!m_platform->createWindow(wd))
+        {
+            log.error("Engine: failed to create window");
+            return false;
+        }
+
+        m_platform->setMouseGrab(true);
+        m_platform->showCursor(false);
+
+        SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
+
+        // ---- OpenGL context attributes ----
+        // These MUST be set before GLBackend::createSwapChain which calls
+        // SDL_GL_CreateContext internally.
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+
+        // ---- Renderer ----
+        // NOTE: Do NOT call SDL_GL_CreateContext or gladLoadGL here.
+        // GLBackend::createSwapChain() owns context creation and GLAD loading.
+        // Creating a second context here leaves a dangling unused GL context.
+        m_renderer = createRenderBackend();
+        if (!m_renderer)
+        {
+            log.error("Engine: failed to create render backend");
+            return false;
+        }
+
+        if (!m_renderer->initialize(m_platform))
+        {
+            log.error("Engine: render backend init failed");
+            return false;
+        }
+
+        if (!m_renderer->createSwapChain(win, wd))
+        {
+            log.error("Engine: createSwapChain failed");
+            return false;
+        }
+
+        SDL_ShowWindow(win);
+        SDL_RaiseWindow(win);
+        // FIX 2: SDL3 relative mouse mode — delivers per-frame deltas via
+        // SDL_EVENT_MOUSE_MOTION. SDL_CaptureMouse is for out-of-window capture
+        // only and does NOT produce relative motion events.
+        if (!SDL_SetWindowRelativeMouseMode(win, true))
+            fprintf(stderr, "Engine: SDL_SetWindowRelativeMouseMode failed: %s\n", SDL_GetError());
+
+        // ---- Shader ----
+        ShaderDesc sd{};
+        sd.vertexSource = g_vsSource;
+        sd.fragmentSource = g_fsSource;
+        m_shader = m_renderer->createShader(sd);
+        if (m_shader == INVALID_SHADER)
+        {
+            log.error("Engine: failed to compile shader");
+            return false;
+        }
+
+        // ---- UBO ----
+        BufferDesc uboDesc{};
+        uboDesc.type = BufferType::Uniform;
+        uboDesc.usage = BufferUsage::Dynamic;
+        uboDesc.size = sizeof(PerFrameUBO);
+        m_uboBuffer = m_renderer->createBuffer(uboDesc);
+        m_renderer->bindUniformBuffer(m_uboBuffer, 0);
+
+        // ---- White 1x1 lightmap fallback ----
+        TextureDesc td{};
+        td.type = TextureType::Texture2D;
+        td.width = td.height = 1;
+        td.format = TextureFormat::RGB8;
+        td.minFilter = TextureFilter::Linear;
+        td.magFilter = TextureFilter::Linear;
+        uint8_t white[3] = {255, 255, 255};
+        td.initialData = white;
+        m_whiteTexture = m_renderer->createTexture(td);
+        m_whiteSampler = m_renderer->createSampler(td);
+
+        // ---- Camera ----
+        m_camera = new Camera();
+        m_camera->setAspect((float)wd.width / (float)wd.height);
+
+        // ---- BSP + Physics ----
+        if (bspPath && bspPath[0] != '\0')
+        {
+            m_bsp = new BSPMap();
+            if (!m_bsp->load(m_platform, bspPath))
+            {
+                log.warn("Engine: BSP load failed — running without map");
+                delete m_bsp;
+                m_bsp = nullptr;
+            }
+            else
+            {
+                m_bsp->uploadToGPU(m_renderer);
+
+                Vec3 spawn = m_bsp->getSpawnOrigin();
+
+                // ---- Physics setup ----
+                // Order matters:
+                //   1. Create physics
+                //   2. Set world geometry
+                //   3. Set hull bounds
+                //   4. Set entity storage (MUST be before any trace/setOrigin calls)
+                //   5. Wire camera entity handle and physics pointer
+                //   6. Run spawn floor trace
+                //   7. Write spawn position into storage + camera simultaneously
+
+                const Vec3 playerMins = {-16.f, -36.f, -16.f};
+                const Vec3 playerMaxs = {16.f, 36.f, 16.f};
+
+                m_physics = new AABBPhysics();
+                m_physics->setWorld(m_bsp);
+                static_cast<AABBPhysics *>(m_physics)->setPlayerBounds(playerMins, playerMaxs);
+
+                // Step 4: storage must be valid before ANY trace or setOrigin call
+                static_cast<AABBPhysics *>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
+
+                // Step 5: wire both the entity handle AND the physics pointer into camera
+                EntityHandle camEntity = EntityHandle::make(0, 1);
+                m_camera->setEntity(camEntity);
+                m_camera->setPhysicsWorld(m_physics); // <-- was missing, caused noclip fallback
+
+                // Step 6: sweep player hull down from well above spawn to land on floor
+                Vec3 traceStart = spawn;
+                traceStart.y += 256.f; // guarantee above any local geometry
+                Vec3 traceEnd = spawn;
+                traceEnd.y -= 4096.f; // deep enough scan for any map height
+
+                TraceResult spawnTr = m_physics->trace(traceStart, traceEnd, playerMins, playerMaxs);
+
+                Vec3 safeSpawn;
+                if (spawnTr.fraction < 1.0f && spawnTr.normal.y > 0.5f)
+                {
+                    // Hull landed on a real upward-facing floor surface.
+                    // Add 1 unit of Y clearance so the first-frame ground trace
+                    // doesn't start inside the brush.
+                    safeSpawn = spawnTr.endPos;
+                    safeSpawn.y += 1.0f;
+                    fprintf(stdout, "Engine: spawn floor found at Y=%.1f (trace fraction=%.3f)\n",
+                            safeSpawn.y, spawnTr.fraction);
+                }
+                else
+                {
+                    // No floor found (open void, ceiling-only spawn, etc.).
+                    // Fall back to origin + fixed offset; gravity will take over.
+                    log.warn("Engine: spawn ground trace found no floor — using fallback height");
+                    safeSpawn = spawn;
+                    safeSpawn.y += 64.f;
+                }
+
+                // FIX 6: Solid-escape nudge.
+                // Some Q2 maps have info_player_start inside or overlapping a brush.
+                // If the hull is solid, push upward in 8-unit steps until clear.
+                {
+                    AABBPhysics *aabb = static_cast<AABBPhysics *>(m_physics);
+                    constexpr int kMaxNudgeSteps = 64;
+                    constexpr float kNudgeStep = 8.0f;
+                    for (int nudge = 0; nudge < kMaxNudgeSteps; ++nudge)
+                    {
+                        if (!aabb->testSolid(safeSpawn, playerMins, playerMaxs))
+                            break; // clear — done
+                        safeSpawn.y += kNudgeStep;
+                    }
+                    if (aabb->testSolid(safeSpawn, playerMins, playerMaxs))
+                        log.warn("Engine: could not escape solid at spawn — player may be stuck");
+                    else
+                        fprintf(stdout, "Engine: final safe spawn Y=%.1f\n", safeSpawn.y);
+                }
+
+                // Step 7: atomically set storage, physics origin, and camera position.
+                // Camera::update() reads m_physics->getOrigin() on its very first tick,
+                // which reads back m_cameraPosition.  If only setPosition() is called here
+                // the storage stays at {0,0,0} and the spawn gets overwritten on frame 1.
+                m_cameraPosition = safeSpawn;
+                m_cameraVelocity = {0.f, 0.f, 0.f};
+                m_physics->setOrigin(camEntity, safeSpawn);
+                m_physics->setVelocity(camEntity, {0.f, 0.f, 0.f});
+                m_camera->setPosition(safeSpawn);
+
+                if (m_bsp->getSpawnAngles().y != 0.f)
+                    m_camera->setYaw(m_bsp->getSpawnAngles().y);
+
+                fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
+                        safeSpawn.x, safeSpawn.y, safeSpawn.z);
+            }
+        }
+
+        buildDebugScene();
+
+        m_lastTime = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
+        m_running = true;
+        log.info("Engine: Phase 1 ready");
+        return true;
+    }
+
+    // -----------------------------------------------------------------------
+    void Engine::buildDebugScene()
+    {
+        struct Vertex
+        {
+            float pos[3];
+            float uv[2];
+            float lmUV[2];
+            float n[3];
+            uint8_t c[4];
+        };
+        static_assert(sizeof(Vertex) == 44, "Vertex stride must be 44 bytes");
+
+        Vertex boxVerts[] = {
+            // Floor
+            {{-10, 0, -10}, {0, 0}, {0, 0}, {0, 1, 0}, {140, 140, 140, 255}},
+            {{10, 0, -10}, {1, 0}, {0, 0}, {0, 1, 0}, {140, 140, 140, 255}},
+            {{10, 0, 10}, {1, 1}, {0, 0}, {0, 1, 0}, {140, 140, 140, 255}},
+            {{-10, 0, 10}, {0, 1}, {0, 0}, {0, 1, 0}, {140, 140, 140, 255}},
+            // Back wall
+            {{-10, 0, -10}, {0, 0}, {0, 0}, {0, 0, 1}, {100, 100, 140, 255}},
+            {{10, 0, -10}, {1, 0}, {0, 0}, {0, 0, 1}, {100, 100, 140, 255}},
+            {{10, 8, -10}, {1, 1}, {0, 0}, {0, 0, 1}, {100, 100, 140, 255}},
+            {{-10, 8, -10}, {0, 1}, {0, 0}, {0, 0, 1}, {100, 100, 140, 255}},
+            // Ceiling
+            {{-10, 8, -10}, {0, 0}, {0, 0}, {0, -1, 0}, {80, 80, 80, 255}},
+            {{10, 8, -10}, {1, 0}, {0, 0}, {0, -1, 0}, {80, 80, 80, 255}},
+            {{10, 8, 10}, {1, 1}, {0, 0}, {0, -1, 0}, {80, 80, 80, 255}},
+            {{-10, 8, 10}, {0, 1}, {0, 0}, {0, -1, 0}, {80, 80, 80, 255}},
+        };
+
+        uint32_t boxIndices[] = {
+            0,
+            1,
+            2,
+            0,
+            2,
+            3,
+            4,
+            5,
+            6,
+            4,
+            6,
+            7,
+            8,
+            9,
+            10,
+            8,
+            10,
+            11,
+        };
+
+        BufferDesc vbDesc{};
+        vbDesc.type = BufferType::Vertex;
+        vbDesc.usage = BufferUsage::Static;
+        vbDesc.size = sizeof(boxVerts);
+        vbDesc.initialData = boxVerts;
+        m_debugVertex = m_renderer->createBuffer(vbDesc);
+
+        BufferDesc ibDesc{};
+        ibDesc.type = BufferType::Index;
+        ibDesc.usage = BufferUsage::Static;
+        ibDesc.size = sizeof(boxIndices);
+        ibDesc.initialData = boxIndices;
+        m_debugIndex = m_renderer->createBuffer(ibDesc);
+
+        m_debugIndexCount = (int)(sizeof(boxIndices) / sizeof(boxIndices[0]));
+    }
+
+    // -----------------------------------------------------------------------
+    void Engine::shutdown()
+    {
+        if (m_bsp)
+        {
+            delete m_bsp;
+            m_bsp = nullptr;
+        }
+        if (m_physics)
+        {
+            delete m_physics;
+            m_physics = nullptr;
+        }
+
+        if (m_renderer)
+        {
+            if (m_shader != INVALID_SHADER)
+                m_renderer->destroyShader(m_shader);
+            if (m_uboBuffer != INVALID_BUFFER)
+                m_renderer->destroyBuffer(m_uboBuffer);
+            if (m_debugVertex != INVALID_BUFFER)
+                m_renderer->destroyBuffer(m_debugVertex);
+            if (m_debugIndex != INVALID_BUFFER)
+                m_renderer->destroyBuffer(m_debugIndex);
+            if (m_whiteTexture != INVALID_TEXTURE)
+                m_renderer->destroyTexture(m_whiteTexture);
+            if (m_whiteSampler != INVALID_SAMPLER)
+                m_renderer->destroySampler(m_whiteSampler);
+        }
+
+        delete m_camera;
+        m_camera = nullptr;
+
+        if (m_renderer)
+        {
+            m_renderer->shutdown();
+            delete m_renderer;
+            m_renderer = nullptr;
+        }
+        if (m_platform)
+        {
+            m_platform->destroyWindow();
+            delete m_platform;
+            m_platform = nullptr;
+        }
+
+        SDL_Quit();
+        Logger::instance().info("Engine: shutdown complete");
+    }
+
+    // -----------------------------------------------------------------------
+    int Engine::run()
+    {
+        const double targetDt = 1.0 / 60.0;
+        const double maxDt = 0.25;
+
+        while (m_running)
+        {
+            double now = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
+            double dt = now - m_lastTime;
+            m_lastTime = now;
+            if (dt > maxDt)
+                dt = maxDt;
+
+            m_fpstimer += dt;
+            m_frames++;
+            if (m_fpstimer >= 1.0)
+            {
+                m_fps = m_frames;
+                m_frames = 0;
+                m_fpstimer = 0.0;
+                char title[128];
+                snprintf(title, sizeof(title), "Nova Engine [%d FPS]", m_fps);
+                m_platform->setWindowTitle(title);
+            }
+
+            update((float)dt);
+            render();
+
+            if (dt < targetDt)
+            {
+                double sleepMs = (targetDt - dt) * 1000.0 - 1.0;
+                if (sleepMs > 0.0)
+                    SDL_Delay((Uint32)sleepMs);
+            }
+        }
+
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    void Engine::update(float dt)
+    {
+        InputState input{};
+        if (!m_platform->pollInput(input))
+        {
+            m_running = false;
+            return;
+        }
+
+        if (input.keys[SDL_SCANCODE_ESCAPE])
+            m_running = false;
+
+        static bool prevF1 = false;
+        const bool f1Down = input.keys[SDL_SCANCODE_F1];
+        if (f1Down && !prevF1)
+        {
+            static int cycles = 0;
+            cycles++;
+            SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
+            if (cycles % 2 == 0)
+            {
+                m_platform->setMouseGrab(true);
+                m_platform->showCursor(false);
+                SDL_SetWindowRelativeMouseMode(win, true);
+            }
+            else
+            {
+                m_platform->setMouseGrab(false);
+                m_platform->showCursor(true);
+                SDL_SetWindowRelativeMouseMode(win, false);
+            }
+        }
+        prevF1 = f1Down;
+
+        static bool prevF2 = false;
+        const bool f2Down = input.keys[SDL_SCANCODE_F2];
+        if (f2Down && !prevF2)
+        {
+            m_debugView = (m_debugView + 1) % 4;
+            const char *modeName =
+                (m_debugView == 0) ? "lit" :
+                (m_debugView == 1) ? "lightmap-gray" :
+                (m_debugView == 2) ? "lightmap-boost" :
+                                     "lightmap-uv";
+            fprintf(stdout, "Engine: debug view = %s (F2 to cycle)\n", modeName);
+        }
+        prevF2 = f2Down;
+
+        m_camera->update(input, dt);
+    }
+
+    // -----------------------------------------------------------------------
+    void Engine::render()
+    {
+        // FIX 9: Do NOT call glDisable(GL_CULL_FACE) here.
+        // GLBackend::createSwapChain enables GL_CULL_FACE + GL_CCW once.
+        // Disabling it every frame causes all back faces to be drawn.
+        m_renderer->clearColor(0.1f, 0.1f, 0.15f, 1.f);
+        m_renderer->clearDepth(1.f);
+
+        Mat4 viewProj = m_camera->getViewProjectionMatrix();
+        memcpy(m_ubo.viewProj, viewProj.data(), sizeof(float) * 16);
+        Vec3 cp = m_camera->getPosition();
+        m_ubo.camPos[0] = cp.x;
+        m_ubo.camPos[1] = cp.y;
+        m_ubo.camPos[2] = cp.z;
+
+        // FIX 8: Update UBO data, bind shader, then REBIND the UBO every frame.
+        // The BSP render() call may change GL state; without rebinding, the
+        // PerFrame block at binding=0 reads stale or zero data next frame.
+        m_renderer->setBufferData(m_uboBuffer, &m_ubo, sizeof(m_ubo));
+        m_renderer->bindShader(m_shader);
+        m_renderer->bindUniformBuffer(m_uboBuffer, 0); // must be AFTER bindShader
+        {
+            GLint debugLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uDebugView");
+            if (debugLoc >= 0)
+                glUniform1i(debugLoc, m_debugView);
+        }
+
+        if (m_bsp)
+        {
+            m_bsp->render(m_renderer);
         }
         else
         {
-            m_platform->setMouseGrab(false);
-            m_platform->showCursor(true);
-            SDL_SetWindowRelativeMouseMode(win, false);
+            m_renderer->bindTexture(m_whiteTexture, m_whiteSampler, 0);
+            if (m_debugVertex != INVALID_BUFFER)
+                m_renderer->bindVertexBuffer(m_debugVertex, 0, nullptr);
+            if (m_debugIndex != INVALID_BUFFER && m_debugIndexCount > 0)
+            {
+                m_renderer->bindIndexBuffer(m_debugIndex);
+                m_renderer->drawIndexed(m_debugIndexCount, 0);
+            }
         }
+
+        m_renderer->present();
     }
-
-    m_camera->update(input, dt);
-}
-
-// -----------------------------------------------------------------------
-void Engine::render()
-{
-    glClearColor(0.1f, 0.1f, 0.15f, 1.f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    Mat4 viewProj = m_camera->getViewProjectionMatrix();
-    memcpy(m_ubo.viewProj, viewProj.data(), sizeof(float) * 16);
-    Vec3 cp = m_camera->getPosition();
-    m_ubo.camPos[0] = cp.x; m_ubo.camPos[1] = cp.y; m_ubo.camPos[2] = cp.z;
-    m_renderer->setBufferData(m_uboBuffer, &m_ubo, sizeof(m_ubo));
-    m_renderer->bindShader(m_shader);
-    m_renderer->bindUniformBuffer(m_uboBuffer, 0);
-
-    if (m_bsp)
-    {
-        // BSP render: binds the lightmap atlas internally
-        m_bsp->render(m_renderer);
-    }
-    else
-    {
-        // Debug scene: use white 1x1 texture as lightmap
-        m_renderer->bindTexture(m_whiteTexture, m_whiteSampler, 0);
-
-        if (m_debugVertex != INVALID_BUFFER)
-            m_renderer->bindVertexBuffer(m_debugVertex, 0);
-
-        if (m_debugIndex != INVALID_BUFFER && m_debugIndexCount > 0)
-        {
-            m_renderer->bindIndexBuffer(m_debugIndex);
-            m_renderer->drawIndexed(m_debugIndexCount, 0);
-        }
-    }
-
-    SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
-    SDL_GL_SwapWindow(win);
-}
 
 } // namespace nova
 

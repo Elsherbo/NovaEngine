@@ -17,14 +17,14 @@ namespace nova
 
 // -----------------------------------------------------------------------
 // EntityID - 32-bit generational index
-//   [15 bits index] [1 bit valid] [16 bits generation]
+//   [16 bits generation] [15 bits index] [1 bit unused]
 // -----------------------------------------------------------------------
 struct EntityID
 {
     uint32_t bits = kInvalid;
 
-    static constexpr size_t kIndexBits    = 15;
-    static constexpr size_t kGenBits    = 16;
+    static constexpr size_t kIndexBits = 15;
+    static constexpr size_t kGenBits   = 16;
     static constexpr uint32_t kInvalid = 0xFFFFFFFF;
 
     bool isValid() const   { return bits != kInvalid; }
@@ -66,6 +66,11 @@ class EntityHandle
 public:
     EntityHandle() { m_id.bits = EntityID::kInvalid; }
     explicit EntityHandle(EntityID id) : m_id(id) {}
+
+    static EntityHandle make(uint16_t idx, uint16_t gen)
+    {
+        return EntityHandle(EntityID::make(idx, gen));
+    }
 
     bool isValid() const { return m_id.isValid(); }
     bool isNull() const { return !m_id.isValid(); }

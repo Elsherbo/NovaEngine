@@ -23,6 +23,7 @@ namespace nova
 class EntityList
 {
 public:
+    static constexpr size_t kMaxEntities = 32768;
     using IterateFn = void(*)(Entity&);
 
     EntityList();
@@ -46,12 +47,11 @@ public:
     void findInAABB(const AABB& box, EntityHandle *out, int *outCount, int maxCount);
 
 private:
-    std::vector<Entity>   m_entities;
-    std::vector<char>   m_active;
-    std::vector<EntityID> m_freeList;
-    size_t              m_freeCount = 0;
-
-    static constexpr size_t kMaxEntities = 32768;
+    std::vector<Entity>    m_entities;
+    std::vector<char>      m_active;
+    std::vector<EntityID>  m_freeList;
+    size_t                 m_freeCount = 0;
+    size_t                 m_activeCount = 0;
 };
 
 } // namespace nova

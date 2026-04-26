@@ -21,15 +21,22 @@ namespace nova
 
 struct ThreadInfo
 {
+    SDL_Thread *thread = nullptr;
+};
+
+struct ThreadStartInfo
+{
     ThreadFunc func;
     void      *data;
-    SDL_Thread *thread = nullptr;
 };
 
 static int threadWrapper(void *data)
 {
-    ThreadInfo *info = static_cast<ThreadInfo *>(data);
-    info->func(info->data);
+    ThreadStartInfo *info = static_cast<ThreadStartInfo *>(data);
+    ThreadFunc func = info->func;
+    void *userData = info->data;
+    delete info;
+    func(userData);
     return 0;
 }
 
@@ -220,10 +227,18 @@ public:
     ThreadHandle createThread(ThreadFunc func, void *data) override
     {
         ThreadHandle h;
-        ThreadInfo *info   = new ThreadInfo{func, data};
-        SDL_Thread *thread = SDL_CreateThread(threadWrapper, "NovaThread", info);
-        info->thread       = thread;
-        h.native           = info;
+        ThreadInfo *info = new ThreadInfo{};
+        ThreadStartInfo *startInfo = new ThreadStartInfo{func, data};
+        SDL_Thread *thread = SDL_CreateThread(threadWrapper, "NovaThread", startInfo);
+        if (!thread)
+        {
+            delete startInfo;
+            delete info;
+            return h;
+        }
+
+        info->thread = thread;
+        h.native = info;
         return h;
     }
 

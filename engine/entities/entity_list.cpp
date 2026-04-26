@@ -17,25 +17,22 @@ namespace nova
 {
 
 // -----------------------------------------------------------------------
-// Constants
-// -----------------------------------------------------------------------
-static constexpr size_t kMaxEntities = 32768;  // 2^15, fits in 15-bit index
-
-// -----------------------------------------------------------------------
 // EntityList constructor
 // -----------------------------------------------------------------------
 EntityList::EntityList()
 {
-    m_entities.resize(kMaxEntities);
-    m_active.resize(kMaxEntities, 0);
-    m_freeList.resize(kMaxEntities);
+    // Use the class constant to avoid shadowing
+    m_entities.resize(EntityList::EntityList::kMaxEntities);
+    m_active.resize(EntityList::EntityList::kMaxEntities, 0);
+    m_freeList.resize(EntityList::EntityList::kMaxEntities);
 
     // Initialize free list
-    for (int i = kMaxEntities - 1; i >= 0; --i)
+    for (int i = (int)EntityList::EntityList::kMaxEntities - 1; i >= 0; --i)
     {
         m_freeList[i] = EntityID::make(static_cast<uint16_t>(i), 0);
     }
-    m_freeCount = kMaxEntities;
+    m_freeCount = EntityList::EntityList::kMaxEntities;
+    m_activeCount = 0;
 }
 
 // -----------------------------------------------------------------------
@@ -68,6 +65,7 @@ EntityHandle EntityList::create(const char *classname)
 
     // Mark as active
     m_active[id.index()] = 1;
+    ++m_activeCount;
 
     return EntityHandle(id);
 }
@@ -83,7 +81,7 @@ void EntityList::destroy(EntityHandle handle)
     uint16_t idx = handle.index();
 
     // Verify valid index and generation match
-    if (idx >= kMaxEntities || !m_active[idx])
+    if (idx >= EntityList::EntityList::kMaxEntities || !m_active[idx])
         return;
 
     Entity& e = m_entities[handle.index()];
@@ -92,6 +90,7 @@ void EntityList::destroy(EntityHandle handle)
 
     // Free it
     m_active[idx] = 0;
+    --m_activeCount;
 
     // Increment generation for safety
     uint16_t newGen = e.handle.generation() + 1;
@@ -111,7 +110,7 @@ Entity *EntityList::get(EntityHandle handle)
         return nullptr;
 
     uint16_t idx = handle.index();
-    if (idx >= kMaxEntities || !m_active[idx])
+    if (idx >= EntityList::EntityList::kMaxEntities || !m_active[idx])
         return nullptr;
 
     Entity& e = m_entities[handle.index()];
@@ -122,19 +121,27 @@ Entity *EntityList::get(EntityHandle handle)
 }
 
 // -----------------------------------------------------------------------
-// getRef - get reference to entity
+// getRef - get reference to entity (asserts valid)
 // -----------------------------------------------------------------------
 Entity& EntityList::getRef(EntityHandle handle)
 {
-    return m_entities[handle.index()];
+    Entity *e = get(handle);
+    assert(e && "getRef: invalid handle");
+    return *e;
 }
 
 // -----------------------------------------------------------------------
-// getRef - get const reference
+// getRef - get reference by ID (asserts valid)
 // -----------------------------------------------------------------------
 Entity& EntityList::getRef(EntityID id)
 {
-    return m_entities[id.index()];
+    if (!id.isValid())
+        assert(!"getRef: invalid EntityID");
+
+    uint16_t idx = id.index();
+    assert(idx < EntityList::EntityList::kMaxEntities && m_active[idx] && "getRef: invalid index");
+
+    return m_entities[idx];
 }
 
 // -----------------------------------------------------------------------
@@ -142,7 +149,7 @@ Entity& EntityList::getRef(EntityID id)
 // -----------------------------------------------------------------------
 void EntityList::iterateActive(IterateFn func)
 {
-    for (size_t i = 0; i < kMaxEntities; ++i)
+    for (size_t i = 0; i < EntityList::kMaxEntities; ++i)
     {
         if (m_active[i])
         {
@@ -157,7 +164,7 @@ void EntityList::iterateActive(IterateFn func)
 // -----------------------------------------------------------------------
 void EntityList::iterateByClassname(const char *classname, IterateFn func)
 {
-    for (size_t i = 0; i < kMaxEntities; ++i)
+    for (size_t i = 0; i < EntityList::kMaxEntities; ++i)
     {
         if (m_active[i])
         {
@@ -175,10 +182,7 @@ void EntityList::iterateByClassname(const char *classname, IterateFn func)
 // -----------------------------------------------------------------------
 size_t EntityList::count() const
 {
-    size_t c = 0;
-    for (size_t i = 0; i < kMaxEntities; ++i)
-        if (m_active[i]) ++c;
-    return c;
+    return m_activeCount;
 }
 
 // -----------------------------------------------------------------------
@@ -186,7 +190,7 @@ size_t EntityList::count() const
 // -----------------------------------------------------------------------
 EntityHandle EntityList::findByClassname(const char *classname)
 {
-    for (size_t i = 0; i < kMaxEntities; ++i)
+    for (size_t i = 0; i < EntityList::kMaxEntities; ++i)
     {
         if (m_active[i])
         {
@@ -206,7 +210,7 @@ EntityHandle EntityList::findByClassname(const char *classname)
 void EntityList::findInAABB(const AABB& box, EntityHandle *out, int *outCount, int maxCount)
 {
     int count = 0;
-    for (size_t i = 0; i < kMaxEntities && count < maxCount; ++i)
+    for (size_t i = 0; i < EntityList::kMaxEntities && count < maxCount; ++i)
     {
         if (m_active[i])
         {

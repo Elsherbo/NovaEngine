@@ -11,6 +11,7 @@
 // ============================================================
 
 #include "engine/renderer/bsp/bsp.h"
+#include "engine/renderer/irender_backend.h"
 
 #include <cstdio>
 #include <cstring>
@@ -39,6 +40,9 @@ void BSPMap::freeLumps()
     m_nodes.clear();
     m_leaves.clear();
     m_leafFaces.clear();
+    m_brushes.clear();
+    m_brushSides.clear();
+    m_leafBrushes.clear();
     m_entities.clear();
     m_surfaces.clear();
     m_verticesPacked.clear();
@@ -113,6 +117,13 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
     };
 
     // ---- Planes ----
+    // CRITICAL: q2ToGL swaps Y and Z and negates new-Z (old-Y). The plane
+    // equation is n·p = dist. After the coordinate transform the dot product
+    // is recomputed in GL space, so dist must stay the same IF the transform
+    // is a pure rotation/reflection (which it is — det = ±1, preserves
+    // distances). The normal direction IS changed by the transform so we
+    // apply q2ToGL to the normal, but dist is invariant and must NOT be
+    // negated or swapped.
     {
         auto [off, len] = lump(BSPLump::Planes);
         int count = len / (int)sizeof(BSPRawPlane);
@@ -121,7 +132,7 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
         {
             const BSPRawPlane *r = reinterpret_cast<const BSPRawPlane *>(data + off) + i;
             m_planes[i].normal = q2ToGL(r->normal[0], r->normal[1], r->normal[2]);
-            m_planes[i].dist   = r->dist;
+            m_planes[i].dist   = r->dist;  // invariant under orthogonal transform
         }
     }
 
@@ -283,6 +294,43 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
             m_leafFaces[i] = raw[i];
     }
 
+    // ---- Brushes (collision geometry) ----
+    {
+        auto [off, len] = lump(BSPLump::Brushes);
+        int count = len / (int)sizeof(BSPRawBrush);
+        m_brushes.resize(count);
+        for (int i = 0; i < count; ++i)
+        {
+            const BSPRawBrush *r = reinterpret_cast<const BSPRawBrush *>(data + off) + i;
+            m_brushes[i].firstBrushSide = r->firstBrushSide;
+            m_brushes[i].numBrushSides = r->numBrushSides;
+            m_brushes[i].contents = r->contents;
+        }
+    }
+
+    // ---- BrushSides ----
+    {
+        auto [off, len] = lump(BSPLump::BrushSides);
+        int count = len / (int)sizeof(BSPRawBrushSide);
+        m_brushSides.resize(count);
+        for (int i = 0; i < count; ++i)
+        {
+            const BSPRawBrushSide *r = reinterpret_cast<const BSPRawBrushSide *>(data + off) + i;
+            m_brushSides[i].plane = r->plane;
+            m_brushSides[i].texinfo = r->texinfo;
+        }
+    }
+
+    // ---- LeafBrushes (index into Brushes lump) ----
+    {
+        auto [off, len] = lump(BSPLump::LeafBrushes);
+        int count = len / (int)sizeof(uint16_t);
+        m_leafBrushes.resize(count);
+        const uint16_t *raw = reinterpret_cast<const uint16_t *>(data + off);
+        for (int i = 0; i < count; ++i)
+            m_leafBrushes[i] = raw[i];
+    }
+
     // ---- Entities ----
     {
         auto [off, len] = lump(BSPLump::Entities);
@@ -295,7 +343,17 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
 }
 
 // ---------------------------------------------------------------------------
-// FIX 8: Q2 lightmap extent calculation.
+// Lightmap extent calculation.
+//
+// IMPORTANT: UV projection must use CONSISTENT coordinate spaces.
+// m_vertices[] are already in GL space (q2ToGL applied during loadLumps).
+// ti.uAxis/vAxis are also already in GL space (q2ToGL applied in loadLumps).
+// Because q2ToGL is an orthogonal transform (det = -1, a reflection), dot
+// products are preserved: dot(q2ToGL(p), q2ToGL(axis)) == dot(p, axis).
+// So both GL-space and Q2-space give identical UV values — consistent.
+//
+// The SAME formula is used in buildGeometry() for per-vertex lmUV, so
+// lmMins and per-vertex (worldU, worldV) are always in the same space.
 void BSPMap::computeFaceExtents(int faceIdx)
 {
     BSPFace &face = m_faces[faceIdx];
@@ -316,6 +374,7 @@ void BSPMap::computeFaceExtents(int faceIdx)
         uint16_t vIdx = (edgeIdx >= 0) ? m_edges[edgeIdx].v0 : m_edges[-edgeIdx].v1;
         if (vIdx >= (uint16_t)m_vertices.size()) continue;
 
+        // m_vertices and ti axes are both GL-space — dot product preserved by q2ToGL
         const Vec3 &p = m_vertices[vIdx];
         float u = p.x*ti.uAxis.x + p.y*ti.uAxis.y + p.z*ti.uAxis.z + ti.uOffset;
         float v = p.x*ti.vAxis.x + p.y*ti.vAxis.y + p.z*ti.vAxis.z + ti.vOffset;
@@ -339,21 +398,62 @@ void BSPMap::computeFaceExtents(int faceIdx)
 // ---------------------------------------------------------------------------
 void BSPMap::parseSpawnFromEntities()
 {
-    const char *spawn = strstr(m_entities.c_str(), "info_player_deathmatch");
-    if (!spawn) spawn = strstr(m_entities.c_str(), "info_player_start");
+    // Q2 entity lump format: one or more blocks of the form
+    //   { "key" "value" "key" "value" ... }
+    // We must scope all key lookups to a single entity block to avoid
+    // accidentally reading "origin" or "angle" from an adjacent entity.
+    // The old code used bare strstr() on the full entity string, which
+    // could bleed across block boundaries on maps with many entities.
 
-    if (spawn)
+    const char* src = m_entities.c_str();
+
+    // Find the first entity block whose body contains the given classname.
+    // Returns {blockBegin, blockEnd} pointers into src, or {nullptr, nullptr}.
+    auto findBlock = [&](const char* classname) -> std::pair<const char*, const char*>
     {
-        const char *originKey = strstr(spawn, "\"origin\"");
+        const char* p = src;
+        while (*p)
+        {
+            const char* open = strchr(p, '{');
+            if (!open) break;
+            const char* close = strchr(open + 1, '}');
+            if (!close) break;
+
+            // Search for classname only within this block
+            const char* c = open + 1;
+            while (c < close)
+            {
+                c = (const char*)memchr(c, classname[0], close - c);
+                if (!c) break;
+                if (strncmp(c, classname, strlen(classname)) == 0)
+                    return {open, close};
+                ++c;
+            }
+            p = close + 1;
+        }
+        return {nullptr, nullptr};
+    };
+
+    auto [blockStart, blockEnd] = findBlock("info_player_deathmatch");
+    if (!blockStart)
+        std::tie(blockStart, blockEnd) = findBlock("info_player_start");
+
+    if (blockStart && blockEnd)
+    {
+        // Copy the block into a null-terminated string so sscanf is safe
+        std::string block(blockStart, (size_t)(blockEnd - blockStart + 1));
+        const char* b = block.c_str();
+
+        const char* originKey = strstr(b, "\"origin\"");
         if (originKey)
         {
-            float x = 0, y = 0, z = 0;
+            float x = 0.f, y = 0.f, z = 0.f;
             if (sscanf(originKey, "\"origin\" \"%f %f %f\"", &x, &y, &z) == 3)
                 m_spawnOrigin = q2ToGL(x, y, z);
         }
 
-        const char *angleKey = strstr(spawn, "\"angle\"");
-        if (!angleKey) angleKey = strstr(spawn, "\"angles\"");
+        const char* angleKey = strstr(b, "\"angle\"");
+        if (!angleKey) angleKey = strstr(b, "\"angles\"");
         if (angleKey)
         {
             float yaw = 0.f;
@@ -409,9 +509,11 @@ bool BSPMap::load(IPlatform *platform, const char *path)
     }
 
     fprintf(stdout,
-            "BSPMap: verts=%zu faces=%zu planes=%zu edges=%zu models=%zu leafFaces=%zu\n",
+            "BSPMap: verts=%zu faces=%zu planes=%zu edges=%zu models=%zu leafFaces=%zu\n"
+            "BSPMap: brushes=%zu brushSides=%zu leafBrushes=%zu\n",
             m_vertices.size(), m_faces.size(), m_planes.size(),
-            m_edges.size(), m_models.size(), m_leafFaces.size());
+            m_edges.size(), m_models.size(), m_leafFaces.size(),
+            m_brushes.size(), m_brushSides.size(), m_leafBrushes.size());
 
     return true;
 }
@@ -485,26 +587,35 @@ void BSPMap::buildGeometry()
             }
 
             // ---- Lightmap UV into atlas ----
-            // If the atlas packing has run, face.hasAtlas == true and
-            // atlasX/atlasY give the texel origin of this face's lightmap.
-            // Note: texinfo may be -1 but still has lightmap (emissive surfaces).
-            float lmU = 0.f, lmV = 0.f;
+            // Faces without a packed lightmap get lmUV = (-1, -1) as a sentinel.
+            // The shader detects x < 0 and uses the unlit fallback colour instead
+            // of sampling the atlas corner (which would give wrong lighting).
+            float lmU = -1.f, lmV = -1.f;
             if (face.hasAtlas && face.lmWidth > 0 && face.lmHeight > 0)
             {
-                // Per-vertex position within face lightmap (in texels):
                 float faceU = (worldU - face.lmMins[0]) / 16.f;
                 float faceV = (worldV - face.lmMins[1]) / 16.f;
-                // +0.5 centres on the texel
-                // Flip V: Q2 origin is top-left, GL is bottom-left
                 lmU = ((float)face.atlasX + faceU + 0.5f) / (float)kAtlasSize;
-                lmV = 1.0f - ((float)face.atlasY + faceV + 0.5f) / (float)kAtlasSize;
+                lmV = ((float)face.atlasY + faceV + 0.5f) / (float)kAtlasSize;
+                // Clamp to face region to prevent bilinear bleeding into adjacent entries
+                float u0 = ((float)face.atlasX + 0.5f) / (float)kAtlasSize;
+                float u1 = ((float)(face.atlasX + face.lmWidth)  - 0.5f) / (float)kAtlasSize;
+                float v0 = ((float)face.atlasY + 0.5f) / (float)kAtlasSize;
+                float v1 = ((float)(face.atlasY + face.lmHeight) - 0.5f) / (float)kAtlasSize;
+                lmU = lmU < u0 ? u0 : (lmU > u1 ? u1 : lmU);
+                lmV = lmV < v0 ? v0 : (lmV > v1 ? v1 : lmV);
             }
 
-            // Position-based debug colour (used when no texture is bound)
-            constexpr float kScale = 0.01f;
-            uint8_t cr = (uint8_t)std::max(0.f, std::min(255.f, (pos.x + 4096.f) * kScale));
-            uint8_t cg = (uint8_t)std::max(0.f, std::min(255.f,  pos.y           * kScale * 4.f));
-            uint8_t cb = (uint8_t)std::max(0.f, std::min(255.f, (pos.z + 4096.f) * kScale));
+            // Vertex colour: white for lit faces, dim grey for no-lightmap faces.
+            // The position-based colour gradient is too dark for small maps
+            // (world coords near 0 → near-black after multiply with lightmap).
+            // White lets the lightmap display at full intensity as intended.
+            uint8_t cr = 255, cg = 255, cb = 255;
+            if (!face.hasAtlas)
+            {
+                // No lightmap — use a muted tint so these faces are visually distinct
+                cr = 80; cg = 80; cb = 100;
+            }
 
             BSPVertexPacked vtx;
             vtx.pos[0] = pos.x; vtx.pos[1] = pos.y; vtx.pos[2] = pos.z;
@@ -527,15 +638,38 @@ void BSPMap::buildGeometry()
         uint32_t baseVertex = (uint32_t)m_verticesPacked.size();
 
         Surface surf;
+        surf.firstVertex = baseVertex;
+        surf.vertCount   = (uint32_t)faceVerts.size();
         surf.indexOffset = (uint32_t)m_indicesRaw.size();
         surf.indexCount  = (int)(faceVerts.size() - 2) * 3;
         surf.faceIndex   = fi;
 
+        // Check winding: compute cross product of first edge vectors
+        const auto &v0 = faceVerts[0].pos;
+        const auto &v1 = faceVerts[1].pos;
+        const auto &v2 = faceVerts[2].pos;
+        Vec3 e1{ v1[0]-v0[0], v1[1]-v0[1], v1[2]-v0[2] };
+        Vec3 e2{ v2[0]-v0[0], v2[1]-v0[1], v2[2]-v0[2] };
+        Vec3 cross{ e1.y*e2.z - e1.z*e2.y,
+                   e1.z*e2.x - e1.x*e2.z,
+                   e1.x*e2.y - e1.y*e2.x };
+        float dot = cross.x*faceNormal.x + cross.y*faceNormal.y + cross.z*faceNormal.z;
+        bool reverse = (dot < 0.0f);  // winding opposite to normal
+
         for (size_t tri = 0; tri < faceVerts.size() - 2; ++tri)
         {
-            m_indicesRaw.push_back(baseVertex);
-            m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 1);
-            m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 2);
+            if (reverse)
+            {
+                m_indicesRaw.push_back(baseVertex);
+                m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 2);
+                m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 1);
+            }
+            else
+            {
+                m_indicesRaw.push_back(baseVertex);
+                m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 1);
+                m_indicesRaw.push_back(baseVertex + (uint32_t)tri + 2);
+            }
         }
 
         m_surfaces.push_back(surf);
@@ -593,16 +727,20 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
     int shelfH = 0; // height of the current shelf
 
     int packed = 0, skipped = 0;
+    int noLightofs = 0, zeroDims = 0, outOfBounds = 0;
 
     for (int fi = 0; fi < (int)m_faces.size(); ++fi)
     {
         BSPFace &face = m_faces[fi];
-        if (face.lightofs < 0 || face.lmWidth <= 0 || face.lmHeight <= 0)
-            continue;
+        if (face.lightofs < 0)            { ++noLightofs; continue; }
+        if (face.lmWidth <= 0 || face.lmHeight <= 0) { ++zeroDims;  continue; }
 
         int faceBytes = face.lmWidth * face.lmHeight * 3;
         if (face.lightofs + faceBytes > (int)m_lightmapData.size())
+        {
+            ++outOfBounds;
             continue;   // corrupt / truncated data
+        }
 
         int padW = face.lmWidth  + kGutter;
         int padH = face.lmHeight + kGutter;
@@ -643,8 +781,18 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
         ++packed;
     }
 
-    fprintf(stdout, "BSPMap: lightmap atlas %dx%d: %d packed, %d skipped\n",
-            atlasW, atlasH, packed, skipped);
+    fprintf(stdout, "BSPMap: lightmap atlas %dx%d: %d packed, %d skipped, "
+            "%d no-lightofs, %d zero-dims, %d out-of-bounds\n",
+            atlasW, atlasH, packed, skipped, noLightofs, zeroDims, outOfBounds);
+
+    // Dump first face stats for debugging
+    if (!m_faces.empty())
+    {
+        const BSPFace &f0 = m_faces[0];
+        fprintf(stdout, "BSPMap: face[0] lightofs=%d lmW=%d lmH=%d hasAtlas=%d atlasX=%d atlasY=%d\n",
+                f0.lightofs, f0.lmWidth, f0.lmHeight, (int)f0.hasAtlas, f0.atlasX, f0.atlasY);
+        fprintf(stdout, "BSPMap: lightmapData size=%zu bytes\n", m_lightmapData.size());
+    }
 
     // Upload the atlas as a single texture
     TextureDesc td{};
@@ -719,12 +867,9 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
     {
         if (surf.indexCount <= 0) continue;
 
-        // The triangle fan for this surface starts at globalBase in m_verticesPacked.
-        // All indices in [indexOffset, indexOffset+indexCount) reference verts in
-        // the range [globalBase, globalBase+vertCount).  Since it's a fan, the
-        // minimum index IS globalBase and vertCount = indexCount/3 + 2.
-        uint32_t globalBase = m_indicesRaw[surf.indexOffset];
-        uint32_t vertCount  = (uint32_t)(surf.indexCount / 3) + 2;
+        // Use explicit firstVertex and vertCount from Surface (not derived from index array)
+        uint32_t globalBase = surf.firstVertex;
+        uint32_t vertCount  = surf.vertCount;
 
         // Guard against corrupted surface data
         if (globalBase + vertCount > (uint32_t)m_verticesPacked.size()) continue;
@@ -787,7 +932,7 @@ void BSPMap::render(IRenderBackend *backend)
     {
         if (chunk.vertexBuffer == INVALID_BUFFER || chunk.indexBuffer == INVALID_BUFFER)
             continue;
-        backend->bindVertexBuffer(chunk.vertexBuffer, 0);
+        backend->bindVertexBuffer(chunk.vertexBuffer, 0, &kLayoutBSP);
         backend->bindIndexBuffer(chunk.indexBuffer);
         backend->drawIndexed(chunk.indexCount, 0);
     }

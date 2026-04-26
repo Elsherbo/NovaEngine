@@ -64,9 +64,15 @@ namespace nova
             return {x * inv, y * inv, z * inv, w * inv};
         }
 
-        // Rotate a vector (caller must ensure 'this' is a unit quaternion)
+        // Rotate a vector (normalizes if needed to prevent drift)
         Vec3 rotate(const Vec3 &v) const
         {
+            float lSq = lengthSq();
+            if (std::abs(lSq - 1.0f) > 1e-6f)
+            {
+                Quat n = normalized();
+                return n.rotate(v);
+            }
             Quat p = {v.x, v.y, v.z, 0.f};
             Quat r = (*this) * p * conjugate();
             return {r.x, r.y, r.z};

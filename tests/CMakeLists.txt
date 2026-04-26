@@ -23,3 +23,6 @@ add_test(NAME EntityTests COMMAND test_entity)
 add_executable(test_collide physics/test_collide.cpp)
 target_link_libraries(test_collide PRIVATE nova_physics)
 add_test(NAME CollideTests COMMAND test_collide)
+
+# add_executable(test_trace_world physics/test_trace_world.cpp)
+# target_link_libraries(test_trace_world PRIVATE nova_engine nova_physics)

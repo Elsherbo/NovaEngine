@@ -66,24 +66,44 @@ void Logger::writePrefix(LogLevel /*level*/, const char *levelStr)
     fprintf(m_file, "[%s] [%s] ", timeBuf, levelStr);
 }
 
-void Logger::debug(const char *msg)
+void Logger::debug(const char *fmt, ...)
 {
-    log(LogLevel::Debug, msg);
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    log(LogLevel::Debug, buf);
 }
 
-void Logger::info(const char *msg)
+void Logger::info(const char *fmt, ...)
 {
-    log(LogLevel::Info, msg);
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    log(LogLevel::Info, buf);
 }
 
-void Logger::warn(const char *msg)
+void Logger::warn(const char *fmt, ...)
 {
-    log(LogLevel::Warn, msg);
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    log(LogLevel::Warn, buf);
 }
 
-void Logger::error(const char *msg)
+void Logger::error(const char *fmt, ...)
 {
-    log(LogLevel::Error, msg);
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    log(LogLevel::Error, buf);
 }
 
 void Logger::log(LogLevel level, const char *msg)

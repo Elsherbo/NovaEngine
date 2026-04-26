@@ -16,6 +16,7 @@
 // ============================================================
 
 #include "engine/renderer/gl/gl_backend.h"
+#include "engine/renderer/irender_backend.h"
 #include <glad/glad.h>
 #include <cstring>
 #include <cstdio>
@@ -157,28 +158,9 @@ namespace nova
     GLBackend::GLBackend() = default;
     GLBackend::~GLBackend() { shutdown(); }
 
-    bool GLBackend::initialize(IPlatform *platform)
+bool GLBackend::initialize(IPlatform *platform)
     {
         m_platform = platform;
-
-        if (!gladLoadGL())
-            return false;
-
-        // Global VAO — required by GL 4.5 Core Profile
-        glGenVertexArrays(1, &m_vao);
-        glBindVertexArray(m_vao);
-
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
-        glEnable(GL_CULL_FACE);
-        glCullFace(GL_BACK);
-        glFrontFace(GL_CW);  // Try CW winding (Q2→GL may flip winding)
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-        for (auto &rt : m_rtTextures)
-            rt = {};
-
         return true;
     }
 
@@ -190,13 +172,48 @@ namespace nova
             m_vao = 0;
         }
         m_platform = nullptr;
+        m_rtTextures.clear();
+
+        return;
     }
 
     bool GLBackend::createSwapChain(void *nativeWindow, const WindowDesc &desc)
     {
-        (void)nativeWindow;
+        m_window = nativeWindow;
         m_width = desc.width;
         m_height = desc.height;
+
+        m_sdlGlContext = SDL_GL_CreateContext(static_cast<SDL_Window *>(nativeWindow));
+        if (!m_sdlGlContext)
+        {
+            fprintf(stderr, "GLBackend: SDL_GL_CreateContext failed: %s\n", SDL_GetError());
+            return false;
+        }
+
+        SDL_GL_MakeCurrent(static_cast<SDL_Window *>(nativeWindow), 
+            reinterpret_cast<SDL_GLContext>(m_sdlGlContext));
+
+        // Load GL function pointers (requires active context)
+        if (!gladLoadGL())
+        {
+            fprintf(stderr, "GLBackend: gladLoadGL failed\n");
+            return false;
+        }
+
+        // Global VAO — required by GL 4.5 Core Profile
+        glGenVertexArrays(1, &m_vao);
+        glBindVertexArray(m_vao);
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        // Keep culling disabled for now: BSP faces can contain mixed winding
+        // after coordinate-space conversion and fan triangulation. Forcing
+        // either CW or CCW culling drops valid surfaces and causes the
+        // "inside-out / sliced" look.
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
         glViewport(0, 0, m_width, m_height);
         return true;
     }
@@ -205,7 +222,7 @@ namespace nova
 
     void GLBackend::present()
     {
-        SDL_GL_SwapWindow(static_cast<SDL_Window *>(m_platform->getNativeWindow()));
+        SDL_GL_SwapWindow(static_cast<SDL_Window *>(m_window));
     }
 
     void GLBackend::setSwapChainSize(int width, int height)
@@ -281,13 +298,6 @@ namespace nova
         return info;
     }
 
-    void GLBackend::setUniform(int location, const void *data, size_t size)
-    {
-        if (location < 0 || !data) return;
-        glUniform4fv(location, static_cast<GLsizei>(size / sizeof(float)),
-                     static_cast<const float *>(data));
-    }
-
     BufferHandle GLBackend::createBuffer(const BufferDesc &desc)
     {
         GLuint id;
@@ -351,13 +361,27 @@ namespace nova
             glGenerateMipmap(glType);
 
         glBindTexture(glType, 0);
+
+        // Store texture info for setTextureData
+        TextureObject obj{};
+        obj.texture = id;
+        obj.type = desc.type;
+        obj.width = desc.width;
+        obj.height = desc.height;
+        obj.depth = desc.depth;
+        obj.mipLevels = desc.mipLevels;
+        obj.format = desc.format;
+        m_textures[static_cast<uint64_t>(id)] = obj;
+
         return static_cast<TextureHandle>(id);
     }
 
     void GLBackend::destroyTexture(TextureHandle texture)
     {
         if (texture == INVALID_TEXTURE) return;
-        // FIX 1: extract by value
+        uint64_t key = static_cast<uint64_t>(texture);
+        m_textures.erase(key);
+
         GLuint id = static_cast<GLuint>(texture);
         glDeleteTextures(1, &id);
     }
@@ -365,13 +389,23 @@ namespace nova
     void GLBackend::setTextureData(TextureHandle texture, int mipLevel, const void *data)
     {
         if (texture == INVALID_TEXTURE || !data) return;
+
+        uint64_t key = static_cast<uint64_t>(texture);
+        auto it = m_textures.find(key);
+        if (it == m_textures.end()) return;
+
+        const TextureObject &obj = it->second;
         glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(texture));
+
+        GLenum internalFmt, baseFmt, pixelType;
+        glTextureFormat(obj.format, internalFmt, baseFmt, pixelType);
+
         GLint w = 0, h = 0;
         glGetTexLevelParameteriv(GL_TEXTURE_2D, mipLevel, GL_TEXTURE_WIDTH, &w);
         glGetTexLevelParameteriv(GL_TEXTURE_2D, mipLevel, GL_TEXTURE_HEIGHT, &h);
         if (w > 0 && h > 0)
             glTexSubImage2D(GL_TEXTURE_2D, mipLevel, 0, 0, w, h,
-                            GL_RGBA, GL_UNSIGNED_BYTE, data);
+                            baseFmt, pixelType, data);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
@@ -441,11 +475,7 @@ namespace nova
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-        if (fbo < (GLuint)kMaxRT)
-        {
-            m_rtTextures[fbo].colorTex = colorTex;
-            m_rtTextures[fbo].depthTex = depthTex;
-        }
+        m_rtTextures[fbo] = {colorTex, depthTex};
 
         return static_cast<RenderTargetHandle>(fbo);
     }
@@ -454,13 +484,14 @@ namespace nova
     {
         if (rt == INVALID_RENDERTARGET) return;
         GLuint fbo = static_cast<GLuint>(rt);
-        if (fbo < (GLuint)kMaxRT)
+        auto it = m_rtTextures.find(fbo);
+        if (it != m_rtTextures.end())
         {
-            if (m_rtTextures[fbo].colorTex)
-                glDeleteTextures(1, &m_rtTextures[fbo].colorTex);
-            if (m_rtTextures[fbo].depthTex)
-                glDeleteTextures(1, &m_rtTextures[fbo].depthTex);
-            m_rtTextures[fbo] = {};
+            if (it->second.colorTex)
+                glDeleteTextures(1, &it->second.colorTex);
+            if (it->second.depthTex)
+                glDeleteTextures(1, &it->second.depthTex);
+            m_rtTextures.erase(it);
         }
         glDeleteFramebuffers(1, &fbo);
     }
@@ -468,16 +499,18 @@ namespace nova
     TextureHandle GLBackend::getRenderTargetColorTexture(RenderTargetHandle rt)
     {
         GLuint fbo = static_cast<GLuint>(rt);
-        if (fbo < (GLuint)kMaxRT)
-            return static_cast<TextureHandle>(m_rtTextures[fbo].colorTex);
+        auto it = m_rtTextures.find(fbo);
+        if (it != m_rtTextures.end())
+            return static_cast<TextureHandle>(it->second.colorTex);
         return INVALID_TEXTURE;
     }
 
     TextureHandle GLBackend::getRenderTargetDepthTexture(RenderTargetHandle rt)
     {
         GLuint fbo = static_cast<GLuint>(rt);
-        if (fbo < (GLuint)kMaxRT)
-            return static_cast<TextureHandle>(m_rtTextures[fbo].depthTex);
+        auto it = m_rtTextures.find(fbo);
+        if (it != m_rtTextures.end())
+            return static_cast<TextureHandle>(it->second.depthTex);
         return INVALID_TEXTURE;
     }
 
@@ -591,32 +624,44 @@ namespace nova
         glUseProgram(static_cast<GLuint>(shader));
     }
 
-    void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot)
+void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayout *layout)
+{
+    // Default to BSP layout if null
+    if (!layout) layout = &kLayoutBSP;
+
+    (void)slot;
+    if (buffer == INVALID_BUFFER) return;
+
+    GLuint vbo = static_cast<GLuint>(buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+    for (int i = 0; i < layout->attributeCount; ++i)
     {
-        // Bind VBO and set up the 44-byte BSPVertexPacked layout:
-        //   loc 0: vec3  position  (offset  0)
-        //   loc 1: vec2  uv        (offset 12)
-        //   loc 2: vec2  lmUV      (offset 20)
-        //   loc 3: vec3  normal    (offset 28)
-        //   loc 4: vec4  color     (offset 40, GL_UNSIGNED_BYTE normalized)
-        (void)slot;
-        if (buffer == INVALID_BUFFER) return;
+        const VertexAttribute &attr = layout->attributes[i];
+        GLenum glType = GL_FLOAT;
+        int count = attr.count;
+        bool normalized = GL_FALSE;
 
-        constexpr GLsizei stride = 44;
-        GLuint vbo = static_cast<GLuint>(buffer);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        switch (attr.type)
+        {
+        case VertexType::Float:   glType = GL_FLOAT;         break;
+        case VertexType::Float2:  glType = GL_FLOAT;         break;
+        case VertexType::Float3: glType = GL_FLOAT;         break;
+        case VertexType::Float4: glType = GL_FLOAT;         break;
+        case VertexType::Uint:   glType = GL_UNSIGNED_INT;  break;
+        case VertexType::Uint2:   glType = GL_UNSIGNED_INT;  break;
+        case VertexType::Uint4:   glType = GL_UNSIGNED_INT;  break;
+        case VertexType::Byte4:    glType = GL_UNSIGNED_BYTE; break;
+        case VertexType::Byte4N:   glType = GL_UNSIGNED_BYTE; normalized = GL_TRUE; break;
+        default: continue;
+        }
 
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT,         GL_FALSE, stride, (void*) 0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT,         GL_FALSE, stride, (void*)12);
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT,         GL_FALSE, stride, (void*)20);
-        glEnableVertexAttribArray(3);
-        glVertexAttribPointer(3, 3, GL_FLOAT,         GL_FALSE, stride, (void*)28);
-        glEnableVertexAttribArray(4);
-        glVertexAttribPointer(4, 4, GL_UNSIGNED_BYTE, GL_TRUE,  stride, (void*)40);
+        glEnableVertexAttribArray(i);
+        glVertexAttribPointer(i, count, glType, normalized,
+                          static_cast<GLsizei>(layout->stride),
+                          reinterpret_cast<const void *>(attr.offset));
     }
+}
 
     void GLBackend::bindIndexBuffer(BufferHandle buffer)
     {

@@ -32,10 +32,10 @@ public:
     void setFile(FILE *file);
     void setFilePath(const char *path);
 
-    void debug(const char *msg);
-    void info(const char *msg);
-    void warn(const char *msg);
-    void error(const char *msg);
+    void debug(const char *fmt, ...);
+    void info(const char *fmt, ...);
+    void warn(const char *fmt, ...);
+    void error(const char *fmt, ...);
 
     void log(LogLevel level, const char *msg);
 

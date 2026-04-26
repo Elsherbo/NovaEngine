@@ -2,80 +2,99 @@
 // FILE:    engine/core/camera.h
 // MODULE:  Core > Camera
 // PHASE:   1
-// STATUS:  DONE
-// PURPOSE: First-person camera: WASD + QE movement, mouse look,
+// STATUS:  FIXED
+// PURPOSE: First-person camera: WASD + jump + gravity,
+//          mouse look, BSP collision via IPhysicsWorld,
 //          view/projection matrix generation.
-// DEPENDS: core/math
 //
 // FIX LOG:
-//   1. [NEW] Added vertical movement: Space = up, C = down (Q2-style
-//      noclip flight). Without this, the camera is locked to the XZ
-//      plane and can never look at geometry above or below spawn height.
-//   2. [NEW] Added setPosition overload and getForwardFull() for
-//      unconstrained forward (used for noclip-style free flight).
+//   1. m_physics changed from void* to IPhysicsWorld* —
+//      removes unsafe casts on every use inside camera.cpp.
+//   2. m_spaceHeld added — prevents jump from triggering every
+//      frame while SPACE is held (one-shot edge detection).
+//   3. m_velocity moved to camera state (was local var) so
+//      gravity and momentum persist across frames.
+//   4. setPhysicsWorld() now takes IPhysicsWorld* directly.
+//   5. m_entity added — entity handle for physics integration
+//      via moveSlide().
 // ============================================================
+
 #pragma once
 
 #include "engine/core/math/vec.h"
 #include "engine/core/math/mat4.h"
 #include "engine/core/math/quat.h"
+#include "engine/entities/entity.h"
 
 namespace nova
 {
 
 struct InputState;
+class  IPhysicsWorld;
 
 class Camera
 {
 public:
     Camera();
 
-    void update(const InputState &input, float dt);
+    void update(const InputState& input, float dt);
 
-    // Physics integration - set by engine
-    void setPhysicsWorld(void *world) { m_physics = world; }
-    void *getPhysicsWorld() const { return m_physics; }
+    // ---- Physics integration ----
+    void           setPhysicsWorld(IPhysicsWorld* world) { m_physics = world; }
+    IPhysicsWorld* getPhysicsWorld() const               { return m_physics; }
+    EntityHandle getEntity() const { return m_entity; }
+    void         setEntity(EntityHandle e) { m_entity = e; }
 
+    // ---- Transform queries ----
     Vec3 getPosition() const { return m_position; }
     Quat getRotation() const { return m_rotation; }
     Mat4 getViewMatrix() const;
     Mat4 getProjectionMatrix() const;
     Mat4 getViewProjectionMatrix() const { return getProjectionMatrix() * getViewMatrix(); }
 
-    void setPosition(const Vec3 &pos);
+    // ---- Setters ----
+    void setPosition(const Vec3& pos);
     void setFOV(float fovDegrees);
     void setAspect(float aspect);
     void setNearFar(float nearZ, float farZ);
     void setYaw(float yaw) { m_yaw = yaw; m_rotation = Quat::fromEuler(m_pitch, m_yaw, 0.f); }
 
-    void lookAt(const Vec3 &target);
-    Vec3 getForward() const;       // horizontal-plane locked (for WASD movement)
-    Vec3 getForwardFull() const;   // full 3D forward along view direction
-    Vec3 getRight() const;
-    Vec3 getUp() const;
+    // ---- Direction helpers ----
+    void lookAt(const Vec3& target);
+    Vec3 getForward() const;       // XZ-plane locked (for movement)
+    Vec3 getForwardFull() const;   // full 3D gaze direction
+    Vec3 getRight() const;         // XZ-plane locked
+    Vec3 getUp() const;            // true up based on orientation
 
+    // ---- Speed ----
     float getMoveSpeed() const { return m_moveSpeed; }
     void  setMoveSpeed(float s) { m_moveSpeed = s; }
 
 private:
     void applyMouseLook(float dx, float dy);
 
+    // ---- Transform ----
     Vec3 m_position = {0.f, 0.f, 0.f};
+    Vec3 m_velocity = {0.f, 0.f, 0.f};   // persistent velocity (gravity, momentum)
     Quat m_rotation = Quat::identity();
+    EntityHandle m_entity = {};            // entity handle for physics
 
     float m_yaw   = 0.f;
     float m_pitch = 0.f;
 
+    // ---- Projection ----
     float m_fov    = 90.f;
     float m_aspect = 1280.f / 720.f;
     float m_nearZ  = 0.1f;
     float m_farZ   = 8192.f;
 
-    float m_moveSpeed = 400.f;    // raised from 200: Q2 maps are large
-    float m_lookSpeed = 0.08f;
+    // ---- Control settings ----
+    float m_moveSpeed = 400.f;   // units/s; Q2 maps are large
+    float m_lookSpeed = 0.08f;   // mouse sensitivity
 
-    void *m_physics = nullptr;  // IPhysicsWorld*
-    bool m_grounded = false;
+    // ---- Physics ----
+    IPhysicsWorld* m_physics  = nullptr;
+    bool           m_spaceHeld = false;  // edge-detect for jump
 };
 
 } // namespace nova

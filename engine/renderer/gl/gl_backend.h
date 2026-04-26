@@ -10,6 +10,7 @@
 #pragma once
 
 #include "engine/renderer/irender_backend.h"
+#include <unordered_map>
 
 namespace nova
 {
@@ -33,7 +34,6 @@ public:
     ShaderHandle createShader(const ShaderDesc &desc) override;
     void destroyShader(ShaderHandle shader) override;
     UniformInfo getUniform(ShaderHandle shader, const char *name) override;
-    void setUniform(int location, const void *data, size_t size) override;
 
     BufferHandle createBuffer(const BufferDesc &desc) override;
     void destroyBuffer(BufferHandle buffer) override;
@@ -63,7 +63,7 @@ public:
     void setRasterState(const RasterState &raster) override;
 
     void bindShader(ShaderHandle shader) override;
-    void bindVertexBuffer(BufferHandle buffer, int slot) override;
+    void bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayout *layout) override;
     void bindIndexBuffer(BufferHandle buffer) override;
     void bindTexture(TextureHandle texture, SamplerHandle sampler, int slot) override;
     void bindUniformBuffer(BufferHandle buffer, int slot) override;
@@ -126,6 +126,7 @@ private:
 
     IPlatform *m_platform = nullptr;
     void *m_sdlGlContext = nullptr;
+    void *m_window = nullptr;
     int m_width = 1280;
     int m_height = 720;
 
@@ -144,11 +145,10 @@ private:
         uint32_t colorTex = 0;
         uint32_t depthTex = 0;
     };
+    // Maps TextureHandle -> texture object
+    std::unordered_map<uint64_t, TextureObject> m_textures;
     // Maps RenderTargetHandle (==fbo id) -> textures
-    // We use a simple fixed array; handles are sequential GL IDs so we use a vector
-    // keyed by fbo id.  Vector grows on demand.
-    static constexpr int kMaxRT = 64;
-    RTTextures m_rtTextures[kMaxRT];
+    std::unordered_map<uint32_t, RTTextures> m_rtTextures;
 
     // Next handle value
     uint64_t m_nextHandle = 1;

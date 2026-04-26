@@ -32,26 +32,7 @@ struct WindowHandle
 
 // ---- Input ----
 // keys[] is indexed by SDL_Scancode (hardware layout, not char codes).
-// Use SDL_SCANCODE_* constants directly — do not rely on KeyCode enum
-// values below which use ASCII/GLFW legacy codes not matching SDL scancodes.
-enum class KeyCode : int
-{
-    Unknown = 0,
-    A = 65, B = 66, C = 67, D = 68, E = 69, F = 70, G = 71, H = 72,
-    I = 73, J = 74, K = 75, L = 76, M = 77, N = 78, O = 79, P = 80,
-    Q = 81, R = 82, S = 83, T = 84, U = 85, V = 86, W = 87, X = 88,
-    Y = 89, Z = 90,
-    Space = 32, Escape = 256, Enter = 257, Tab = 258, Backspace = 259,
-    Shift = 260, Ctrl = 261, Alt = 262,
-    ArrowUp = 270, ArrowDown = 271, ArrowLeft = 272, ArrowRight = 273,
-    F1 = 280, F2 = 281, F3 = 282, F4 = 283, F5 = 284, F6 = 285,
-    F7 = 286, F8 = 287, F9 = 288, F10 = 289,
-};
-
-enum class MouseButton : int
-{
-    Left = 0, Right = 1, Middle = 2
-};
+// Use SDL_SCANCODE_* constants directly (e.g., SDL_SCANCODE_W, SDL_SCANCODE_SPACE).
 
 struct InputState
 {
