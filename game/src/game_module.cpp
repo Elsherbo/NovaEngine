@@ -1,0 +1,255 @@
+// ============================================================
+// FILE:    game/src/game_module.cpp
+// MODULE:  Game
+// PURPOSE: GameModule implementation - retro boomer shooter base
+// ============================================================
+
+#include "game_module.h"
+
+#include "engine/entities/entity_list.h"
+#include "engine/entities/entity.h"
+#include "engine/core/log.h"
+
+#include <cstring>
+#include <cstdio>
+
+namespace nova
+{
+
+// -----------------------------------------------------------------------
+// GameModule constructor
+// -----------------------------------------------------------------------
+GameModule::GameModule()
+{
+}
+
+// -----------------------------------------------------------------------
+// GameModule destructor
+// -----------------------------------------------------------------------
+GameModule::~GameModule()
+{
+    shutdown();
+}
+
+// -----------------------------------------------------------------------
+// init - initialize game state
+// -----------------------------------------------------------------------
+bool GameModule::init()
+{
+    fprintf(stdout, "GameModule: initializing...\n");
+
+    m_playerHealth = 100.0f;
+    m_playerArmor = 0.0f;
+
+    for (int i = 0; i < 8; i++)
+        m_ammo[i] = 0;
+
+    m_weapons = 0;
+
+    fprintf(stdout, "GameModule: ready\n");
+    return true;
+}
+
+// -----------------------------------------------------------------------
+// shutdown - cleanup game state
+// -----------------------------------------------------------------------
+void GameModule::shutdown()
+{
+    fprintf(stdout, "GameModule: shutdown\n");
+}
+
+// -----------------------------------------------------------------------
+// think - per-frame game update
+// -----------------------------------------------------------------------
+void GameModule::think(float dt)
+{
+    updatePlayer(dt);
+    checkPickups();
+}
+
+// -----------------------------------------------------------------------
+// onEntitySpawn - handle new entity spawned
+// -----------------------------------------------------------------------
+void GameModule::onEntitySpawn(EntityHandle handle)
+{
+    Entity* ent = g_entityList.get(handle);
+    if (!ent) return;
+
+    if (std::strcmp(ent->classname, "player") == 0 ||
+        std::strcmp(ent->classname, "info_player_deathmatch") == 0)
+    {
+        m_playerHandle = handle;
+    }
+}
+
+// -----------------------------------------------------------------------
+// onEntityDestroy - handle entity destroyed
+// -----------------------------------------------------------------------
+void GameModule::onEntityDestroy(EntityHandle)
+{
+}
+
+// -----------------------------------------------------------------------
+// onEntityTouch - handle collision
+// -----------------------------------------------------------------------
+void GameModule::onEntityTouch(EntityHandle handle, EntityHandle other)
+{
+    Entity* self = g_entityList.get(handle);
+    Entity* otherEnt = g_entityList.get(other);
+    if (!self || !otherEnt) return;
+
+    // Check if player touched an item
+    if (handle == m_playerHandle)
+    {
+        if (std::strncmp(otherEnt->classname, "item_", 5) == 0)
+        {
+            // Collect item
+            if (std::strcmp(otherEnt->classname, "item_health") == 0)
+            {
+                addHealth(otherEnt->health);
+            }
+            else if (std::strcmp(otherEnt->classname, "item_health_small") == 0)
+            {
+                addHealth(25.0f);
+            }
+            else if (std::strcmp(otherEnt->classname, "item_health_large") == 0 ||
+                    std::strcmp(otherEnt->classname, "item_health_mega") == 0)
+            {
+                addHealth(100.0f);
+            }
+            else if (std::strncmp(otherEnt->classname, "item_armor", 9) == 0)
+            {
+                addArmor(100.0f);
+            }
+            else if (std::strncmp(otherEnt->classname, "ammo_", 4) == 0)
+            {
+                addAmmo(0, 50);
+            }
+            else if (std::strncmp(otherEnt->classname, "weapon_", 7) == 0)
+            {
+                addWeapon(1);
+            }
+
+            g_entityList.destroy(other);
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// setPhysicsWorld - wire physics
+// -----------------------------------------------------------------------
+void GameModule::setPhysicsWorld(IPhysicsWorld* physics)
+{
+    m_physics = physics;
+}
+
+// -----------------------------------------------------------------------
+// getPhysicsWorld
+// -----------------------------------------------------------------------
+IPhysicsWorld* GameModule::getPhysicsWorld()
+{
+    return m_physics;
+}
+
+// -----------------------------------------------------------------------
+// setAudioSystem - wire audio
+// -----------------------------------------------------------------------
+void GameModule::setAudioSystem(IAudioSystem* audio)
+{
+    m_audio = audio;
+}
+
+// -----------------------------------------------------------------------
+// getAudioSystem
+// -----------------------------------------------------------------------
+IAudioSystem* GameModule::getAudioSystem()
+{
+    return m_audio;
+}
+
+// -----------------------------------------------------------------------
+// setNetworkSystem - wire networking
+// -----------------------------------------------------------------------
+void GameModule::setNetworkSystem(INetworkSystem* net)
+{
+    m_network = net;
+}
+
+// -----------------------------------------------------------------------
+// getNetworkSystem
+// -----------------------------------------------------------------------
+INetworkSystem* GameModule::getNetworkSystem()
+{
+    return m_network;
+}
+
+// -----------------------------------------------------------------------
+// getAmmo
+// -----------------------------------------------------------------------
+int GameModule::getAmmo(int type) const
+{
+    if (type < 0 || type >= 8) return 0;
+    return m_ammo[type];
+}
+
+// -----------------------------------------------------------------------
+// addHealth
+// -----------------------------------------------------------------------
+void GameModule::addHealth(float amount)
+{
+    m_playerHealth += amount;
+    if (m_playerHealth > 100.0f) m_playerHealth = 100.0f;
+}
+
+// -----------------------------------------------------------------------
+// addArmor
+// -----------------------------------------------------------------------
+void GameModule::addArmor(float amount)
+{
+    m_playerArmor += amount;
+    if (m_playerArmor > 200.0f) m_playerArmor = 200.0f;
+}
+
+// -----------------------------------------------------------------------
+// addAmmo
+// -----------------------------------------------------------------------
+void GameModule::addAmmo(int type, int amount)
+{
+    if (type < 0 || type >= 8) return;
+    m_ammo[type] += amount;
+}
+
+// -----------------------------------------------------------------------
+// addWeapon
+// -----------------------------------------------------------------------
+void GameModule::addWeapon(int weaponId)
+{
+    m_weapons |= (1 << weaponId);
+}
+
+// -----------------------------------------------------------------------
+// updatePlayer
+// -----------------------------------------------------------------------
+void GameModule::updatePlayer(float)
+{
+    // Player state updates (input processing, etc.)
+}
+
+// -----------------------------------------------------------------------
+// checkPickups
+// -----------------------------------------------------------------------
+void GameModule::checkPickups()
+{
+    // Check for pickup collisions
+}
+
+// -----------------------------------------------------------------------
+// GetGameModule - factory function
+// -----------------------------------------------------------------------
+IGameModule* GetGameModule()
+{
+    static GameModule g_module;
+    return &g_module;
+}
+
+} // namespace nova
