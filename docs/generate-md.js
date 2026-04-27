@@ -279,5 +279,5 @@ ln("");
 
 // ── Write ──────────────────────────────────────────────────────
 const output = lines.join("\n");
-fs.writeFileSync("./ENGINE_PLAN.md", output, "utf8");
+fs.writeFileSync("./docs/ENGINE_PLAN.md", output, "utf8");
 console.log(`✅  ENGINE_PLAN.md generated — Rev ${META.revision}  (${output.length.toLocaleString()} chars)`);

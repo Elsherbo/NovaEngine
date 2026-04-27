@@ -313,6 +313,7 @@ namespace nova
 
         Vec3 getSpawnOrigin() const { return m_spawnOrigin; }
         Vec3 getSpawnAngles() const { return m_spawnAngles; }
+        const char* getEntityString() const { return m_entities.c_str(); }
 
         // ---- IBSPCollisionWorld implementation ----
         const BSPNode *nodes() const override { return m_nodes.data(); }

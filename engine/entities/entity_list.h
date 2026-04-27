@@ -60,4 +60,7 @@ private:
     size_t   m_activeCount = 0;
 };
 
+// Global instance — defined in entity_list.cpp, used by EntityFactory
+extern EntityList g_entityList;
+
 } // namespace nova

@@ -1,0 +1,311 @@
+// ============================================================
+// FILE:    engine/entities/map_loader.cpp
+// MODULE:  Entities
+// PHASE:   2
+// STATUS:  IN_PROGRESS
+// PURPOSE: BSP entity lump parser + entity spawner.
+//          No external libs — custom hand-written parser only.
+// DEPENDS: entities/map_loader.h, entities/entity_factory.h,
+//          entities/entity_list.h, renderer/bsp/bsp.h
+// ============================================================
+
+#include "engine/entities/map_loader.h"
+#include "engine/entities/entity_factory.h"
+#include "engine/entities/entity_list.h"
+#include "engine/renderer/bsp/bsp.h"
+
+#include <cstring>   // strncpy, strcmp, strlen, strncmp
+#include <cstdio>    // fprintf, sscanf
+#include <cctype>    // isspace
+
+namespace nova
+{
+
+extern EntityList g_entityList;
+
+// ============================================================
+// ParsedEntity
+// ============================================================
+
+const char* ParsedEntity::get(const char* key) const
+{
+    for (int i = 0; i < count; ++i)
+        if (std::strcmp(pairs[i].key, key) == 0)
+            return pairs[i].val;
+    return nullptr;
+}
+
+void ParsedEntity::add(const char* key, const char* val)
+{
+    if (count >= kMaxPairs) return;
+    std::strncpy(pairs[count].key, key, kMaxKeyLen - 1);
+    pairs[count].key[kMaxKeyLen - 1] = '\0';
+    std::strncpy(pairs[count].val, val, kMaxValLen - 1);
+    pairs[count].val[kMaxValLen - 1] = '\0';
+    ++count;
+}
+
+// ============================================================
+// Parser helpers
+// ============================================================
+
+/// Skip whitespace and C++ // comments (Q2 entity lumps may have them).
+static const char* skipWS(const char* p)
+{
+    while (*p)
+    {
+        if (std::isspace((unsigned char)*p))        { ++p; continue; }
+        if (p[0] == '/' && p[1] == '/') {            // line comment
+            while (*p && *p != '\n') ++p;
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
+/// Read a quoted string starting at the leading `"`.
+/// Stores the contents (without quotes) in `buf` up to `bufSize-1` chars.
+/// Returns pointer just past the closing `"`, or nullptr on error.
+static const char* readQuotedString(const char* p, char* buf, int bufSize)
+{
+    if (*p != '"') return nullptr;
+    ++p;  // skip opening quote
+
+    int len = 0;
+    while (*p && *p != '"')
+    {
+        // Handle backslash-newline continuation (multi-line values).
+        if (p[0] == '\\' && p[1] == '\n')
+        {
+            p += 2;
+            continue;
+        }
+        if (len < bufSize - 1)
+            buf[len++] = *p;
+        ++p;
+    }
+    buf[len] = '\0';
+
+    if (*p != '"') return nullptr;  // unterminated string
+    return p + 1;                   // skip closing quote
+}
+
+// ============================================================
+// parseBlock
+// ============================================================
+
+// Q2 entity lump format:
+//
+//   {
+//   "key" "value"
+//   "key" "value"
+//   }
+//
+// The Quake2 Tools BSP format also allows nested braces for
+// some submodels, but the entity lump itself only has flat blocks.
+
+const char* MapLoader::parseBlock(const char* src, ParsedEntity& out)
+{
+    out.count = 0;
+
+    src = skipWS(src);
+    if (!src || *src != '{') return nullptr;
+    ++src;  // consume '{'
+
+    while (true)
+    {
+        src = skipWS(src);
+        if (!src || !*src) return nullptr;   // unexpected EOS
+        if (*src == '}') return src + 1;     // end of block
+
+        // Expect: "key" "value"
+        if (*src != '"') { ++src; continue; } // skip garbage
+
+        char key[ParsedEntity::kMaxKeyLen];
+        char val[ParsedEntity::kMaxValLen];
+
+        src = readQuotedString(src, key, sizeof(key));
+        if (!src) return nullptr;
+
+        src = skipWS(src);
+        if (!src || *src != '"') return nullptr;
+
+        src = readQuotedString(src, val, sizeof(val));
+        if (!src) return nullptr;
+
+        out.add(key, val);
+    }
+}
+
+// ============================================================
+// linkTargets — post-spawn target resolution
+// ============================================================
+
+void MapLoader::linkTargets()
+{
+    // For every entity that has a "target" stored in its model field
+    // (we reuse model[16..31] as a scratch targetname store during load —
+    // see the NOTE in load() below), find the entity whose classname area
+    // stores the matching targetname, then wire the teamMaster handle.
+    //
+    // Q2 stores target/targetname as arbitrary strings; Entity has no
+    // dedicated fields for them yet, so we use model[] as temp storage:
+    //   model[0..15]  = actual model path (normally empty at load time)
+    //   model[16..31] = target string (what this entity fires at)
+    //   The target entity's model[0..15] = its own targetname
+    //
+    // Iterate all active entities twice:
+    //   Pass 1: collect entities with a target set
+    //   Pass 2: for each, find the entity whose "targetname" matches
+
+    for (size_t i = 0; i < EntityList::kMaxEntities; ++i)
+    {
+        // Access via iterateActive would be cleaner but EntityList
+        // doesn't expose the raw array — use findByClassname won't
+        // work for all classes. Instead we rely on the public get()
+        // with a fabricated handle (generation 1 = post-create default).
+        EntityHandle h = EntityHandle::make(static_cast<uint16_t>(i), 0);
+        // Try generation 1 as well since create() starts at gen 0
+        for (uint16_t gen = 0; gen <= 1; ++gen)
+        {
+            h = EntityHandle::make(static_cast<uint16_t>(i), gen);
+            Entity* src = g_entityList.get(h);
+            if (!src) continue;
+
+            // model[16..31] = target this entity fires at
+            const char* target = src->model + 16;
+            if (target[0] == '\0') continue;
+
+            // Search for an entity whose targetname (model[0..15]) matches.
+            for (size_t j = 0; j < EntityList::kMaxEntities; ++j)
+            {
+                for (uint16_t gen2 = 0; gen2 <= 1; ++gen2)
+                {
+                    EntityHandle dh = EntityHandle::make(static_cast<uint16_t>(j), gen2);
+                    Entity* dst = g_entityList.get(dh);
+                    if (!dst || dst == src) continue;
+
+                    // model[0..15] = targetname of this entity
+                    if (std::strncmp(dst->model, target, 15) == 0 && dst->model[0] != '\0')
+                    {
+                        src->teamMaster = dh;
+                        fprintf(stdout, "MapLoader: linked '%s' → '%s'\n",
+                                src->classname, dst->classname);
+                        goto nextSrc;
+                    }
+                }
+            }
+            nextSrc:;
+            break; // only process the valid gen
+        }
+    }
+}
+
+// ============================================================
+// load
+// ============================================================
+
+int MapLoader::load(const BSPMap* map)
+{
+    if (!map) return 0;
+
+    // BSPMap::m_entities is private; Q2's entity lump is exposed via
+    // getSpawnOrigin/getSpawnAngles in bsp.h, but the raw string is not.
+    // The spec says to access it via BSPMap::entityString (char*).
+    // Since m_entities is std::string and private, we need an accessor.
+    //
+    // OPTION A: Add a public accessor to BSPMap (preferred, type-safe).
+    // OPTION B: Cast — fragile, layout-dependent, never do this.
+    //
+    // We implement Option A: `const char* getEntityString() const`.
+    // See the companion modification note at the bottom of this file.
+    // For now we call the accessor declared there:
+    const char* lump = map->getEntityString();
+    if (!lump || !*lump) return 0;
+
+    int spawned = 0;
+    const char* p = lump;
+
+    while (*p)
+    {
+        p = skipWS(p);
+        if (!*p) break;
+        if (*p != '{') { ++p; continue; }
+
+        ParsedEntity pe;
+        const char* next = parseBlock(p, pe);
+        if (!next) break;
+        p = next;
+
+        if (pe.count == 0) continue;
+
+        // ---- Extract mandatory keys ----
+        const char* classname  = pe.get("classname");
+        if (!classname || !*classname) continue;
+
+        // ---- Origin ----
+        Vec3 origin{0.f, 0.f, 0.f};
+        if (const char* oStr = pe.get("origin"))
+            origin = EntityFactory::parseOrigin(oStr);
+
+        // ---- Spawn the entity ----
+        Entity* ent = EntityFactory::spawn(classname, origin);
+        if (!ent)
+        {
+            fprintf(stderr, "MapLoader: failed to spawn '%s' (pool full?)\n", classname);
+            continue;
+        }
+
+        // ---- Angles ----
+        {
+            const char* aStr = pe.get("angles");
+            if (!aStr) aStr = pe.get("angle");
+            if (aStr) ent->angles = EntityFactory::parseAngles(aStr);
+        }
+
+        // ---- Spawnflags → stored in flags upper 16 bits ----
+        if (const char* sfStr = pe.get("spawnflags"))
+        {
+            uint32_t sf = (uint32_t)EntityFactory::parseInt(sfStr);
+            ent->flags |= (sf << 16);
+        }
+
+        // ---- Health (for damage-activated doors, breakables, etc.) ----
+        if (const char* hStr = pe.get("health"))
+            ent->health = EntityFactory::parseFloat(hStr);
+
+        // ---- target / targetname — stored in model[] temporarily ----
+        // model[0..14]  : targetname (null-terminated, max 15 chars)
+        // model[16..30] : target     (null-terminated, max 15 chars)
+        if (const char* tnStr = pe.get("targetname"))
+            std::strncpy(ent->model,      tnStr, 15);
+        if (const char* tStr  = pe.get("target"))
+            std::strncpy(ent->model + 16, tStr,  15);
+
+        // ---- Diagnostics ----
+        fprintf(stdout, "MapLoader: spawned '%s' at (%.0f, %.0f, %.0f)\n",
+                classname, origin.x, origin.y, origin.z);
+
+        ++spawned;
+    }
+
+    fprintf(stdout, "MapLoader: %d entities spawned from BSP lump\n", spawned);
+
+    // Resolve target links now that all entities exist.
+    linkTargets();
+
+    return spawned;
+}
+
+} // namespace nova
+
+// ============================================================
+// REQUIRED BSPMap ACCESSOR (add to bsp.h public section):
+//
+//   /// Returns the raw entity lump string (null-terminated).
+//   const char* getEntityString() const { return m_entities.c_str(); }
+//
+// This is the minimal change needed — it exposes only a const
+// char* into the existing std::string, no new data members.
+// ============================================================

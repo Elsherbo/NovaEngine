@@ -62,6 +62,8 @@
 #include "engine/physics/aabb_physics.h"
 #include "engine/entities/entity.h"
 #include "engine/entities/entity_list.h"
+#include "engine/entities/entity_factory.h"
+#include "engine/entities/map_loader.h"
 #include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
@@ -203,7 +205,6 @@ void main()
         AssetFS m_assets;
 
         // Entity system (Problem 6)
-        EntityList   m_entityList;
         EntityHandle m_playerEntity;
 
         struct PerFrameUBO
@@ -397,6 +398,14 @@ void main()
             {
                 m_bsp->uploadToGPU(m_renderer);
 
+                // ---- Spawn BSP entities ----
+                EntityFactory::init();
+                int spawned = 0;
+                if (m_bsp) {
+                    spawned = MapLoader::load(m_bsp);
+                    log.info("Engine: %d entities spawned from map", spawned);
+                }
+
                 Vec3 spawn = m_bsp->getSpawnOrigin();
 
                 // ---- Physics setup ----
@@ -480,8 +489,8 @@ void main()
                 // ---- Create player entity in EntityList (Problem 6c) ----
                 // This is a game-logic copy of the player; AABBPhysics continues
                 // to use the external m_cameraPosition/m_cameraVelocity storage.
-                m_playerEntity = m_entityList.create("player");
-                if (Entity* p = m_entityList.get(m_playerEntity))
+                m_playerEntity = g_entityList.create("player");
+                if (Entity* p = g_entityList.get(m_playerEntity))
                 {
                     p->origin   = safeSpawn;
                     p->velocity = Vec3{0.f, 0.f, 0.f};
@@ -734,10 +743,10 @@ void main()
         m_camera->update(input, dt);
 
         // ---- Entity think dispatch (Problem 6f) ----
-        m_entityList.think(dt);
+        g_entityList.think(dt);
 
         // ---- Sync player entity origin from camera (Problem 6e) ----
-        if (Entity* p = m_entityList.get(m_playerEntity))
+        if (Entity* p = g_entityList.get(m_playerEntity))
             p->origin = m_camera->getPosition();
     }
 

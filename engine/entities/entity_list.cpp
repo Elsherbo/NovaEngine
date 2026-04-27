@@ -18,6 +18,9 @@
 namespace nova
 {
 
+// Global entity list — used by EntityFactory, MapLoader, engine
+EntityList g_entityList;
+
 // -----------------------------------------------------------------------
 // EntityList constructor
 // -----------------------------------------------------------------------
