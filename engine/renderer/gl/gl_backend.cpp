@@ -204,8 +204,26 @@ bool GLBackend::initialize(IPlatform *platform)
         glGenVertexArrays(1, &m_vao);
         glBindVertexArray(m_vao);
 
+        // ── Reversed-Z depth setup ──────────────────────────────────────
+        // glClipControl maps NDC Z from [-1,1] to [0,1] clip space.
+        // Combined with perspectiveReverseZ() in camera.cpp:
+        //   near → 1.0  (most float precision)
+        //   far  → 0.0  (least float precision)
+        // This is the opposite of the OpenGL default, so we flip the
+        // depth test from GL_LESS to GL_GREATER and clear to 0 not 1.
+        // Requires OpenGL 4.5 (glClipControl is core since 4.5).
+        glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
         glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
+        glDepthFunc(GL_GREATER);   // reversed-Z: closer = higher depth value
+        // ────────────────────────────────────────────────────────────────
+
+        // sRGB framebuffer: OpenGL will automatically apply gamma encoding
+        // (linear -> sRGB) on every write to the default framebuffer.
+        // This replaces the manual pow(color, 1/2.2) in the fragment shader.
+        // All light math in shaders must now happen in LINEAR space;
+        // sRGB-format textures (SRGBA8/SRGB8) are auto-decoded to linear on read.
+        glEnable(GL_FRAMEBUFFER_SRGB);
+        // ────────────────────────────────────────────────────────────────
         // Keep culling disabled for now: BSP faces can contain mixed winding
         // after coordinate-space conversion and fan triangulation. Forcing
         // either CW or CCW culling drops valid surfaces and causes the
@@ -426,6 +444,31 @@ bool GLBackend::initialize(IPlatform *platform)
         glSamplerParameteri(id, GL_TEXTURE_WRAP_S, glWrap(desc.wrapU));
         glSamplerParameteri(id, GL_TEXTURE_WRAP_T, glWrap(desc.wrapV));
         glSamplerParameteri(id, GL_TEXTURE_WRAP_R, glWrap(desc.wrapW));
+
+        // Anisotropic filtering: GL_EXT_texture_filter_anisotropic is core since GL 4.6,
+        // and universally available as an extension on GL 4.5 hardware.
+        // Without this, oblique surfaces (floors, walls at <45°) still shimmer even
+        // with trilinear mipmaps, because a single isotropic mip level is chosen per pixel.
+        // Cap at 8x: excellent quality improvement with negligible fill-rate cost.
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT     0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+        if (desc.mipLevels > 1) // only meaningful when mipmapping is active
+        {
+            float maxAniso = 1.0f;
+            glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+            if (maxAniso > 8.0f) maxAniso = 8.0f;
+            glSamplerParameterf(id, GL_TEXTURE_MAX_ANISOTROPY_EXT, maxAniso);
+
+            // Negative LOD bias: forces a slightly finer mip level than the hardware
+            // would normally pick. Trilinear filtering already eliminates hard LOD
+            // transitions, but can make textures look slightly soft at mid-distance.
+            // -0.5 is the sweet spot used by Source Engine and Quake; it sharpens
+            // without causing aliasing. Don't go below -1.0 (visible shimmer returns).
+            glSamplerParameterf(id, GL_TEXTURE_LOD_BIAS, -0.5f);
+        }
+
         return static_cast<SamplerHandle>(id);
     }
 

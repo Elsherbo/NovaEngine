@@ -45,6 +45,10 @@
 //      engine.cpp init. GLBackend::createSwapChain already creates the
 //      context and loads GLAD. Having two SDL_GL_CreateContext calls
 //      left a dangling unused context from the engine side.
+//  11. [FIX] Added EntityList + player entity. EntityList provides game-
+//      logic entity storage; external Vec3 storage for physics is kept
+//      for AABBPhysics compatibility. Player entity origin is synced from
+//      camera each frame. EntityList::think() is called each update tick.
 // ============================================================
 
 #include "engine/core/log.h"
@@ -57,6 +61,7 @@
 #include "engine/physics/iphysics_world.h"
 #include "engine/physics/aabb_physics.h"
 #include "engine/entities/entity.h"
+#include "engine/entities/entity_list.h"
 #include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
@@ -139,13 +144,14 @@ void main()
         return;
     }
 
-    // Sample the lightmap atlas.
-    // NOTE: this renderer currently does not sample BSP diffuse textures yet,
-    // so lightmap-only output looks almost black. Use a neutral albedo +
-    // ambient floor so maps remain readable until texture loading is added.
+    // Sample the lightmap atlas and apply Q2 overbright scale.
+    // Q2 stores lightmap values where 128 = "normal brightness", so
+    // multiplying by 2 brings the full dynamic range into [0, 2] -> clamp [0, 1].
+    // The lightmap atlas is RGB8 (linear data — Q2 bakers write linear radiance).
+    // Do NOT gamma-encode here: GL_FRAMEBUFFER_SRGB handles that automatically
+    // on framebuffer write, so all shader math must stay in linear space.
     vec3 lm = texture(uLightmap, vLmUv).rgb;
     lm = clamp(lm * 2.0, 0.0, 1.0);
-    lm = pow(lm, vec3(1.0 / 2.2));
 
     if (uDebugView == 1)
     {
@@ -196,6 +202,10 @@ void main()
         IPhysicsWorld *m_physics = nullptr;
         AssetFS m_assets;
 
+        // Entity system (Problem 6)
+        EntityList   m_entityList;
+        EntityHandle m_playerEntity;
+
         struct PerFrameUBO
         {
             float viewProj[16];
@@ -212,7 +222,8 @@ void main()
         int m_debugIndexCount = 0;
         int m_debugView = 0; // 0=lit, 1=lightmap gray, 2=lightmap boosted, 3=lm uv
 
-        // External storage for physics (wired to camera entity slot 0)
+        // External storage for physics (wired to AABBPhysics via setEntityStorage)
+        // Kept alongside EntityList — AABBPhysics requires raw Vec3* pointers.
         Vec3 m_cameraPosition = {0, 0, 0};
         Vec3 m_cameraVelocity = {0, 0, 0};
 
@@ -342,9 +353,6 @@ void main()
         };
 
         // Mount BSP-local roots first so map-pack textures override base assets.
-        // Example:
-        //   <root>/maps/foo.bsp
-        //   <root>/textures/...
         if (bspPath && bspPath[0] != '\0')
         {
             const std::string bspFile = bspPath;
@@ -414,22 +422,19 @@ void main()
                 // Step 5: wire both the entity handle AND the physics pointer into camera
                 EntityHandle camEntity = EntityHandle::make(0, 1);
                 m_camera->setEntity(camEntity);
-                m_camera->setPhysicsWorld(m_physics); // <-- was missing, caused noclip fallback
+                m_camera->setPhysicsWorld(m_physics);
 
                 // Step 6: sweep player hull down from well above spawn to land on floor
                 Vec3 traceStart = spawn;
-                traceStart.y += 256.f; // guarantee above any local geometry
+                traceStart.y += 256.f;
                 Vec3 traceEnd = spawn;
-                traceEnd.y -= 4096.f; // deep enough scan for any map height
+                traceEnd.y -= 4096.f;
 
                 TraceResult spawnTr = m_physics->trace(traceStart, traceEnd, playerMins, playerMaxs);
 
                 Vec3 safeSpawn;
                 if (spawnTr.fraction < 1.0f && spawnTr.normal.y > 0.5f)
                 {
-                    // Hull landed on a real upward-facing floor surface.
-                    // Add 1 unit of Y clearance so the first-frame ground trace
-                    // doesn't start inside the brush.
                     safeSpawn = spawnTr.endPos;
                     safeSpawn.y += 1.0f;
                     fprintf(stdout, "Engine: spawn floor found at Y=%.1f (trace fraction=%.3f)\n",
@@ -437,16 +442,12 @@ void main()
                 }
                 else
                 {
-                    // No floor found (open void, ceiling-only spawn, etc.).
-                    // Fall back to origin + fixed offset; gravity will take over.
                     log.warn("Engine: spawn ground trace found no floor — using fallback height");
                     safeSpawn = spawn;
                     safeSpawn.y += 64.f;
                 }
 
                 // FIX 6: Solid-escape nudge.
-                // Some Q2 maps have info_player_start inside or overlapping a brush.
-                // If the hull is solid, push upward in 8-unit steps until clear.
                 {
                     AABBPhysics *aabb = static_cast<AABBPhysics *>(m_physics);
                     constexpr int kMaxNudgeSteps = 64;
@@ -454,7 +455,7 @@ void main()
                     for (int nudge = 0; nudge < kMaxNudgeSteps; ++nudge)
                     {
                         if (!aabb->testSolid(safeSpawn, playerMins, playerMaxs))
-                            break; // clear — done
+                            break;
                         safeSpawn.y += kNudgeStep;
                     }
                     if (aabb->testSolid(safeSpawn, playerMins, playerMaxs))
@@ -464,9 +465,6 @@ void main()
                 }
 
                 // Step 7: atomically set storage, physics origin, and camera position.
-                // Camera::update() reads m_physics->getOrigin() on its very first tick,
-                // which reads back m_cameraPosition.  If only setPosition() is called here
-                // the storage stays at {0,0,0} and the spawn gets overwritten on frame 1.
                 m_cameraPosition = safeSpawn;
                 m_cameraVelocity = {0.f, 0.f, 0.f};
                 m_physics->setOrigin(camEntity, safeSpawn);
@@ -478,8 +476,24 @@ void main()
 
                 fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
                         safeSpawn.x, safeSpawn.y, safeSpawn.z);
+
+                // ---- Create player entity in EntityList (Problem 6c) ----
+                // This is a game-logic copy of the player; AABBPhysics continues
+                // to use the external m_cameraPosition/m_cameraVelocity storage.
+                m_playerEntity = m_entityList.create("player");
+                if (Entity* p = m_entityList.get(m_playerEntity))
+                {
+                    p->origin   = safeSpawn;
+                    p->velocity = Vec3{0.f, 0.f, 0.f};
+                    p->mins     = playerMins;
+                    p->maxs     = playerMaxs;
+                    p->state    = STATE_ALIVE;
+                }
             }
         }
+
+        // ---- Entity system diagnostics (Acceptance Criteria 5) ----
+        fprintf(stdout, "EntityList: sizeof(Entity) = %zu bytes\n", sizeof(Entity));
 
         buildDebugScene();
 
@@ -521,24 +535,9 @@ void main()
         };
 
         uint32_t boxIndices[] = {
-            0,
-            1,
-            2,
-            0,
-            2,
-            3,
-            4,
-            5,
-            6,
-            4,
-            6,
-            7,
-            8,
-            9,
-            10,
-            8,
-            10,
-            11,
+            0, 1, 2, 0, 2, 3,
+            4, 5, 6, 4, 6, 7,
+            8, 9, 10, 8, 10, 11,
         };
 
         BufferDesc vbDesc{};
@@ -699,17 +698,54 @@ void main()
         }
         prevF2 = f2Down;
 
+        // F3: print PVS stats
+        static bool prevF3 = false;
+        const bool f3Down = input.keys[SDL_SCANCODE_F3];
+        if (f3Down && !prevF3 && m_bsp)
+        {
+            Vec3 pos = m_camera->getPosition();
+            const int nodeCount  = m_bsp->nodeCount();
+            const int leafCount  = m_bsp->leafCount();
+            const int planeCount = m_bsp->planeCount();
+            (void)nodeCount; (void)planeCount;
+
+            int camLeaf = -1;
+            {
+                int ni = 0;
+                while (ni >= 0)
+                {
+                    const nova::BSPNode* nd = m_bsp->nodes() + ni;
+                    const nova::BSPPlane* pl = m_bsp->planes() + nd->plane;
+                    float d = pos.x*pl->normal.x + pos.y*pl->normal.y + pos.z*pl->normal.z - pl->dist;
+                    ni = nd->children[d < 0.f ? 1 : 0];
+                }
+                int li = ~ni;
+                if (li >= 0 && li < leafCount) camLeaf = li;
+            }
+
+            int camCluster = -1;
+            if (camLeaf >= 0)
+                camCluster = (int)m_bsp->leaves()[camLeaf].cluster;
+
+            fprintf(stdout, "PVS: camLeaf=%d cluster=%d\n", camLeaf, camCluster);
+        }
+        prevF3 = f3Down;
+
         m_camera->update(input, dt);
+
+        // ---- Entity think dispatch (Problem 6f) ----
+        m_entityList.think(dt);
+
+        // ---- Sync player entity origin from camera (Problem 6e) ----
+        if (Entity* p = m_entityList.get(m_playerEntity))
+            p->origin = m_camera->getPosition();
     }
 
     // -----------------------------------------------------------------------
     void Engine::render()
     {
-        // FIX 9: Do NOT call glDisable(GL_CULL_FACE) here.
-        // GLBackend::createSwapChain enables GL_CULL_FACE + GL_CCW once.
-        // Disabling it every frame causes all back faces to be drawn.
         m_renderer->clearColor(0.1f, 0.1f, 0.15f, 1.f);
-        m_renderer->clearDepth(1.f);
+        m_renderer->clearDepth(0.f);
 
         Mat4 viewProj = m_camera->getViewProjectionMatrix();
         memcpy(m_ubo.viewProj, viewProj.data(), sizeof(float) * 16);
@@ -718,12 +754,10 @@ void main()
         m_ubo.camPos[1] = cp.y;
         m_ubo.camPos[2] = cp.z;
 
-        // FIX 8: Update UBO data, bind shader, then REBIND the UBO every frame.
-        // The BSP render() call may change GL state; without rebinding, the
-        // PerFrame block at binding=0 reads stale or zero data next frame.
+        // FIX 8: Rebind UBO every frame — BSP render may change GL state.
         m_renderer->setBufferData(m_uboBuffer, &m_ubo, sizeof(m_ubo));
         m_renderer->bindShader(m_shader);
-        m_renderer->bindUniformBuffer(m_uboBuffer, 0); // must be AFTER bindShader
+        m_renderer->bindUniformBuffer(m_uboBuffer, 0);
         {
             GLint debugLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uDebugView");
             if (debugLoc >= 0)
@@ -733,7 +767,7 @@ void main()
         if (m_bsp)
         {
             m_bsp->setViewProj(viewProj);
-            m_bsp->render(m_renderer);
+            m_bsp->render(m_renderer, m_camera->getPosition());
         }
         else
         {

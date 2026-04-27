@@ -106,6 +106,11 @@ void BSPMap::freeLumps()
     m_surfaces.clear();
     m_verticesPacked.clear();
     m_indicesRaw.clear();
+    m_visData.clear();
+    m_numClusters  = 0;
+    m_clusterBytes = 0;
+    m_lastPVSCluster = -2;
+    m_cachedPVS.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +415,33 @@ bool BSPMap::loadLumps(const uint8_t *data, size_t size)
             m_entities.assign(reinterpret_cast<const char *>(data + off), (size_t)len);
     }
 
+    // ---- Visibility lump (PVS / PHS) ----
+    // Layout after the 8-byte header:
+    //   int32 numClusters
+    //   int32 clusterSize  (sizeof each offset-table entry, always 8 for Q2)
+    //   then numClusters * 8 bytes of offset pairs {pvsByteOffset, phasByteOffset}
+    //   then variable-length RLE-compressed PVS data
+    // We store the entire lump raw so decompressPVS can seek into it.
+    {
+        auto [off, len] = lump(BSPLump::Visibility);
+        if (len >= 8)
+        {
+            m_visData.resize((size_t)len);
+            memcpy(m_visData.data(), data + off, (size_t)len);
+
+            int32_t nc, cs;
+            memcpy(&nc, m_visData.data() + 0, 4);
+            memcpy(&cs, m_visData.data() + 4, 4);
+            if (nc > 0 && nc <= 65536)
+            {
+                m_numClusters  = nc;
+                m_clusterBytes = (nc + 7) / 8;
+                fprintf(stdout, "BSPMap: vis lump: %d clusters, %d bytes/row\n",
+                        m_numClusters, m_clusterBytes);
+            }
+        }
+    }
+
     parseSpawnFromEntities();
     return true;
 }
@@ -465,6 +497,74 @@ void BSPMap::computeFaceExtents(int faceIdx)
     // Guard against degenerate faces
     face.lmWidth  = std::max(1, std::min(face.lmWidth,  512));
     face.lmHeight = std::max(1, std::min(face.lmHeight, 512));
+}
+
+// ---------------------------------------------------------------------------
+// findLeaf — walk BSP tree from root to find which leaf contains `pos`.
+// m_planes are already in GL space; cameraPos from getPosition() is also GL space.
+// Children encoding: child >= 0 is a node index; child < 0 is ~leafIndex.
+int BSPMap::findLeaf(const Vec3& pos) const
+{
+    int nodeIdx = 0; // root
+    while (nodeIdx >= 0)
+    {
+        if (nodeIdx >= (int)m_nodes.size()) return -1; // guard
+        const BSPNode& node = m_nodes[nodeIdx];
+        if (node.plane < 0 || node.plane >= (int)m_planes.size()) return -1;
+        const BSPPlane& pl = m_planes[node.plane];
+        float d = pos.x*pl.normal.x + pos.y*pl.normal.y + pos.z*pl.normal.z - pl.dist;
+        nodeIdx = node.children[d < 0.f ? 1 : 0];
+    }
+    // Negative child: ~nodeIdx encodes the leaf index.
+    int leafIdx = ~nodeIdx;
+    if (leafIdx < 0 || leafIdx >= (int)m_leaves.size()) return -1;
+    return leafIdx;
+}
+
+// ---------------------------------------------------------------------------
+// decompressPVS — RLE-decode the PVS bitset for `cluster` into `out`.
+// Q2 vis lump layout (offsets are relative to start of m_visData):
+//   [0]  int32  numClusters
+//   [4]  int32  clusterSize  (always 8 — size of each offset-table entry)
+//   [8]  numClusters * 8 bytes: {int32 pvsByteOffset, int32 phasByteOffset}
+//        offsets are relative to the start of m_visData.
+//   [...] variable-length RLE bitstream data
+//
+// RLE rule: non-zero byte = copy directly; 0x00 followed by byte N = N zero bytes.
+void BSPMap::decompressPVS(int cluster, std::vector<uint8_t>& out) const
+{
+    out.assign((size_t)m_clusterBytes, 0);
+    if (m_visData.empty() || cluster < 0 || cluster >= m_numClusters) return;
+
+    // Offset table entry for this cluster starts at byte 8 + cluster*8.
+    const size_t entryOff = 8 + (size_t)cluster * 8;
+    if (entryOff + 4 > m_visData.size()) return;
+
+    int32_t pvsByteOffset;
+    memcpy(&pvsByteOffset, m_visData.data() + entryOff, 4);
+    if (pvsByteOffset <= 0 || (size_t)pvsByteOffset >= m_visData.size()) return;
+
+    const uint8_t* src = m_visData.data() + pvsByteOffset;
+    const uint8_t* end = m_visData.data() + m_visData.size();
+    int outIdx = 0;
+
+    while (outIdx < m_clusterBytes && src < end)
+    {
+        uint8_t b = *src++;
+        if (b != 0)
+        {
+            out[outIdx++] = b;
+        }
+        else
+        {
+            if (src >= end) break;
+            int run = (int)(*src++);
+            // Guard: don't write past end of out
+            run = std::min(run, m_clusterBytes - outIdx);
+            for (int i = 0; i < run; ++i)
+                out[outIdx++] = 0;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +827,24 @@ void BSPMap::buildGeometry()
         surf.indexCount  = (int)(faceVerts.size() - 2) * 3;
         surf.faceIndex   = fi;
 
+        // Assign the PVS cluster for this surface by scanning leaves.
+        // O(leaves) per face — acceptable at load time.
+        for (int li = 0; li < (int)m_leaves.size(); ++li)
+        {
+            const BSPLeaf& lf = m_leaves[li];
+            for (int lfi = 0; lfi < (int)lf.numFaces; ++lfi)
+            {
+                int lfIdx = (int)lf.firstFace + lfi;
+                if (lfIdx < (int)m_leafFaces.size() &&
+                    (int)m_leafFaces[lfIdx] == fi)
+                {
+                    surf.clusterIndex = (int)lf.cluster;
+                    goto clusterFound;
+                }
+            }
+        }
+        clusterFound:
+
         // Check winding: compute cross product of first edge vectors
         const auto &v0 = faceVerts[0].pos;
         const auto &v1 = faceVerts[1].pos;
@@ -877,17 +995,30 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
         fprintf(stdout, "BSPMap: lightmapData size=%zu bytes\n", m_lightmapData.size());
     }
 
-    // Upload the atlas as a single texture
+    // Upload the atlas as a single texture.
+    // FIX 5: Lightmap atlas now gets anisotropic filtering automatically from
+    // createSampler (Bug #2 fix). mipLevels=4 caps the mip chain at level 4
+    // (4096 -> 256 px) to prevent deep-level cross-face colour bleed. Levels
+    // 5+ collapse many packed face lightmaps into single texels; the 1-texel
+    // gutter can't protect against bleed at that resolution.
+    //
+    // FIX 6 (mipLevels semantic): the convention across this codebase is:
+    //   mipLevels == 1  -> single level, no mip chain (solid/fallback textures)
+    //   mipLevels >= 2  -> generate full mip chain via glGenerateMipmap
+    // The value is also used in createSampler to select the mipmap filter mode
+    // (mipLevels > 1 -> GL_LINEAR_MIPMAP_LINEAR, aniso enabled).
+    // A future refactor should replace this with an explicit `generateMips` bool
+    // and a separate `maxMipLevel` field for immutable storage (glTexStorage2D).
     TextureDesc td{};
-    td.type       = TextureType::Texture2D;
-    td.width      = atlasW;
-    td.height     = atlasH;
-    td.format     = TextureFormat::RGB8;
-    td.minFilter  = TextureFilter::Trilinear;
-    td.magFilter  = TextureFilter::Linear;
-    td.wrapU      = TextureWrap::Clamp;
-    td.wrapV      = TextureWrap::Clamp;
-    td.mipLevels  = 2;
+    td.type        = TextureType::Texture2D;
+    td.width       = atlasW;
+    td.height      = atlasH;
+    td.format      = TextureFormat::RGB8;
+    td.minFilter   = TextureFilter::Trilinear;
+    td.magFilter   = TextureFilter::Linear;
+    td.wrapU       = TextureWrap::Clamp;
+    td.wrapV       = TextureWrap::Clamp;
+    td.mipLevels   = 4;        // generate chain, cap at 4 levels (4096->256px)
     td.initialData = atlas.data();
 
     m_lmAtlasHandle  = backend->createTexture(td);
@@ -939,14 +1070,19 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
     {
         uint8_t px[3] = {r, g, b};
         TextureDesc td{};
-        td.type = TextureType::Texture2D;
-        td.width = td.height = 1;
-        td.format = TextureFormat::RGB8;
-        td.minFilter = TextureFilter::Nearest; // nearest mip for classic look
+        td.type      = TextureType::Texture2D;
+        td.width     = td.height = 1;
+        td.format    = TextureFormat::RGB8;
+        td.minFilter = TextureFilter::Nearest;
         td.magFilter = TextureFilter::Nearest;
-        td.wrapU = TextureWrap::Repeat;
-        td.wrapV = TextureWrap::Repeat;
-        td.mipLevels = 2;
+        td.wrapU     = TextureWrap::Repeat;
+        td.wrapV     = TextureWrap::Repeat;
+        // FIX 4: 1x1 solid-colour fallbacks have exactly one texel — mipLevels=1
+        // means "single level, no mip chain". The old mipLevels=2 was triggering
+        // glGenerateMipmap on a 1-pixel texture (harmless but wasteful and
+        // semantically wrong). mipLevels=1 also skips the aniso path in createSampler,
+        // which is correct: anisotropic filtering has no effect at a single texel.
+        td.mipLevels  = 1;
         td.initialData = px;
         return backend->createTexture(td);
     };
@@ -965,11 +1101,16 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
     SamplerHandle defaultSampler = INVALID_SAMPLER;
     {
         TextureDesc sd{};
-        // Diffuse sampler: Quake-style nearest filtering.
-        sd.minFilter = TextureFilter::Nearest;
-        sd.magFilter = TextureFilter::Nearest;
-        sd.wrapU = TextureWrap::Repeat;
-        sd.wrapV = TextureWrap::Repeat;
+        // FIX: mipLevels must be > 1 so createSampler uses GL_LINEAR_MIPMAP_LINEAR
+        // (trilinear) instead of GL_NEAREST (no mipmap at all).
+        // Without this the sampler object overrides the texture's own filter and
+        // samples from full-resolution mip-0 at every distance → shimmering.
+        // magFilter stays Nearest for the classic Quake pixel-art look up close.
+        sd.minFilter  = TextureFilter::Linear;   // → GL_LINEAR_MIPMAP_LINEAR
+        sd.magFilter  = TextureFilter::Nearest;  // sharp up close
+        sd.wrapU      = TextureWrap::Repeat;
+        sd.wrapV      = TextureWrap::Repeat;
+        sd.mipLevels  = 2;                       // flag: mipmaps exist, use mip filter
         defaultSampler = backend->createSampler(sd);
     }
 
@@ -994,14 +1135,18 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
         }
 
         TextureDesc td{};
-        td.type = TextureType::Texture2D;
-        td.width = img.width;
-        td.height = img.height;
-        td.format = TextureFormat::RGBA8;
-        td.minFilter = TextureFilter::Nearest;
+        td.type      = TextureType::Texture2D;
+        td.width     = img.width;
+        td.height    = img.height;
+        // SRGBA8: tells OpenGL this data is gamma-encoded (which .tga/.png always is).
+        // The hardware auto-decodes to linear on every texture read so all
+        // lighting math in the shader happens in correct linear space.
+        // GL_FRAMEBUFFER_SRGB then re-encodes to sRGB on framebuffer write.
+        td.format    = TextureFormat::SRGBA8;
+        td.minFilter = TextureFilter::Linear;
         td.magFilter = TextureFilter::Nearest;
-        td.wrapU = TextureWrap::Repeat;
-        td.wrapV = TextureWrap::Repeat;
+        td.wrapU     = TextureWrap::Repeat;
+        td.wrapV     = TextureWrap::Repeat;
         td.mipLevels = 2;
         td.initialData = img.rgba.data();
         outTex = backend->createTexture(td);
@@ -1063,14 +1208,17 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
         }
 
         TextureDesc td{};
-        td.type = TextureType::Texture2D;
-        td.width = w;
-        td.height = h;
-        td.format = TextureFormat::RGBA8;
-        td.minFilter = TextureFilter::Nearest;
+        td.type      = TextureType::Texture2D;
+        td.width     = w;
+        td.height    = h;
+        // SRGBA8: WAL palette entries are sRGB values (the Q2 palette is gamma-encoded).
+        // Decoding palette index -> RGB gives sRGB bytes, so we must declare SRGBA8
+        // so the hardware linearises them on read, matching the .tga path.
+        td.format    = TextureFormat::SRGBA8;
+        td.minFilter = TextureFilter::Linear;
         td.magFilter = TextureFilter::Nearest;
-        td.wrapU = TextureWrap::Repeat;
-        td.wrapV = TextureWrap::Repeat;
+        td.wrapU     = TextureWrap::Repeat;
+        td.wrapV     = TextureWrap::Repeat;
         td.mipLevels = 2;
         td.initialData = rgba.data();
         outTex = backend->createTexture(td);
@@ -1237,17 +1385,19 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
         }
 
         // Merge into batches (contiguous indices with same texture).
-        if (!batches.empty() && batches.back().tex == tex && batches.back().samp == samp)
+        if (!batches.empty() && batches.back().tex == tex && batches.back().samp == samp
+            && batches.back().clusterIndex == surf.clusterIndex)
         {
             batches.back().indexCount += surf.indexCount;
         }
         else
         {
             RenderChunk::DrawBatch b{};
-            b.tex = tex;
-            b.samp = samp;
-            b.firstIndex = batchStart;
-            b.indexCount = surf.indexCount;
+            b.tex          = tex;
+            b.samp         = samp;
+            b.firstIndex   = batchStart;
+            b.indexCount   = surf.indexCount;
+            b.clusterIndex = surf.clusterIndex;
             batches.push_back(b);
         }
     }
@@ -1316,12 +1466,29 @@ void BSPMap::releaseGPU(IRenderBackend *backend)
 }
 
 // ---------------------------------------------------------------------------
-void BSPMap::render(IRenderBackend *backend)
+void BSPMap::render(IRenderBackend *backend, const Vec3& cameraPos)
 {
     if (m_chunks.empty())
         return;
 
-    // Bind the single lightmap atlas (slot 0 = uLightmap in shader)
+    // ---- Step 1: Determine camera cluster and decompress PVS ----
+    const int camLeaf    = findLeaf(cameraPos);
+    const int camCluster = (camLeaf >= 0 && camLeaf < (int)m_leaves.size())
+                           ? (int)m_leaves[camLeaf].cluster : -1;
+
+    // Use cached PVS if the cluster hasn't changed since last frame.
+    bool hasPVS = false;
+    if (camCluster >= 0 && !m_visData.empty())
+    {
+        if (camCluster != m_lastPVSCluster)
+        {
+            decompressPVS(camCluster, m_cachedPVS);
+            m_lastPVSCluster = camCluster;
+        }
+        hasPVS = !m_cachedPVS.empty();
+    }
+
+    // ---- Step 2: Bind the lightmap atlas (slot 0 = uLightmap) ----
     if (m_lmAtlasHandle != INVALID_TEXTURE)
         backend->bindTexture(m_lmAtlasHandle, m_lmAtlasSampler, 0);
 
@@ -1330,29 +1497,35 @@ void BSPMap::render(IRenderBackend *backend)
     if (doCull)
         fr = extractFrustum(m_viewProj);
 
-    // Draw all chunks
+    // ---- Step 3: Draw visible chunks ----
     for (const auto &chunk : m_chunks)
     {
         if (chunk.vertexBuffer == INVALID_BUFFER || chunk.indexBuffer == INVALID_BUFFER)
             continue;
+
+        // Frustum-AABB cull the whole chunk first (fast rejection).
         if (doCull && !aabbInFrustum(fr, chunk.boundsMin, chunk.boundsMax))
             continue;
+
         backend->bindVertexBuffer(chunk.vertexBuffer, 0, &kLayoutBSP);
         backend->bindIndexBuffer(chunk.indexBuffer);
 
-        // Draw per-texture batches (slot 1 = uDiffuse)
-        if (!chunk.batches.empty())
+        for (const auto& b : chunk.batches)
         {
-            for (const auto& b : chunk.batches)
+            // PVS cluster gate:
+            //   clusterIndex == -1  -> conservative: always draw (no leaf claimed it)
+            //   hasPVS == false     -> camera in solid/void: draw everything
+            //   otherwise: check the bit for b.clusterIndex in the decompressed row
+            if (hasPVS && b.clusterIndex >= 0)
             {
-                if (b.tex != INVALID_TEXTURE)
-                    backend->bindTexture(b.tex, b.samp, 1);
-                backend->drawIndexed(b.indexCount, b.firstIndex);
+                if (b.clusterIndex >= m_numClusters) continue;
+                if (!(m_cachedPVS[b.clusterIndex >> 3] & (1 << (b.clusterIndex & 7))))
+                    continue;
             }
-        }
-        else
-        {
-            backend->drawIndexed(chunk.indexCount, 0);
+
+            if (b.tex != INVALID_TEXTURE)
+                backend->bindTexture(b.tex, b.samp, 1);
+            backend->drawIndexed(b.indexCount, b.firstIndex);
         }
     }
 }

@@ -182,6 +182,7 @@ namespace nova
         }
 
         // Perspective projection (right-handed, depth [-1, 1] for OpenGL)
+        // Use this when glClipControl is NOT active (standard OpenGL default).
         static Mat4 perspective(float fovYRad, float aspect, float nearZ, float farZ)
         {
             float tanHalf = std::tan(fovYRad * 0.5f);
@@ -191,6 +192,38 @@ namespace nova
             m.col[2][2] = -(farZ + nearZ) / (farZ - nearZ);
             m.col[2][3] = -1.f;
             m.col[3][2] = -(2.f * farZ * nearZ) / (farZ - nearZ);
+            return m;
+        }
+
+        // Reversed-Z perspective projection for [0, 1] clip space.
+        //
+        // Requires glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE) and
+        // glDepthFunc(GL_GREATER) with glClearDepth(0.0).
+        //
+        // Why bother? Standard [0,1] depth maps:
+        //   near  →  0.0   (most float precision lives near 0)
+        //   far   →  1.0   (least precision — far objects z-fight)
+        //
+        // Reversed-Z flips that:
+        //   near  →  1.0
+        //   far   →  0.0   (far objects now get the dense float exponent range)
+        //
+        // With near=2, far=4096 the standard buffer has ~10 bits of precision
+        // past 1000 units. Reversed-Z gives ~22 bits there. Z-fighting in large
+        // Q2 maps is essentially eliminated without changing near/far at all.
+        //
+        // Matrix derivation (right-handed, clip w = -z_view):
+        //   NDC_z = (A * z_view + B) / (-z_view)
+        //   near → 1:  A = n/(f-n),  B = nf/(f-n)
+        static Mat4 perspectiveReverseZ(float fovYRad, float aspect, float nearZ, float farZ)
+        {
+            float tanHalf = std::tan(fovYRad * 0.5f);
+            Mat4 m;
+            m.col[0][0] =  1.f / (aspect * tanHalf);
+            m.col[1][1] =  1.f / tanHalf;
+            m.col[2][2] =  nearZ / (farZ - nearZ);           // n/(f-n)
+            m.col[2][3] = -1.f;
+            m.col[3][2] =  (nearZ * farZ) / (farZ - nearZ);  // nf/(f-n)
             return m;
         }
 

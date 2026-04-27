@@ -73,7 +73,27 @@
 namespace nova
 {
 
-    Camera::Camera() = default;
+// ============================================================
+//  Feel constants — tune here, no hunting through code
+//
+//  Jump height formula: h = kJumpSpeed² / (2 * kGravity)
+//    kJumpSpeed=270, kGravity=800  →  h = 45 units  (vanilla Q2)
+//    kJumpSpeed=350, kGravity=800  →  h = 77 units  (higher feel)
+//    kJumpSpeed=400, kGravity=600  →  h = 133 units (floaty)
+//
+//  To lower gravity without changing jump height, scale both:
+//    halve kGravity AND multiply kJumpSpeed by 1/sqrt(2) to keep h equal.
+//
+//  kAirControl: 0.0 = CS-like (no air steering)
+//               1.0 = Q2-like (partial air steering)
+//               3.0 = Quake-like (strong air steering)
+// ============================================================
+static constexpr float kJumpSpeed   = 350.0f;  // impulse u/s (raise for higher jumps)
+static constexpr float kAirControl  = 1.0f;    // air acceleration multiplier
+static constexpr float kFriction    = 6.0f;    // ground decel (higher = snappier stops)
+static constexpr float kGroundAccel = 10.0f;   // ground acceleration
+
+Camera::Camera() = default;
 
     void Camera::setPosition(const Vec3 &pos) { m_position = pos; }
     void Camera::setFOV(float fovDegrees) { m_fov = fovDegrees; }
@@ -135,7 +155,11 @@ namespace nova
 
     Mat4 Camera::getProjectionMatrix() const
     {
-        return Mat4::perspective(toRadians(m_fov), m_aspect, m_nearZ, m_farZ);
+        // Use reversed-Z projection so far-plane fragments get the float precision
+        // that the standard matrix wastes on near-plane fragments.
+        // Requires glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE) + glDepthFunc(GL_GREATER)
+        // + clearDepth(0.f) — all set in gl_backend.cpp / engine.cpp.
+        return Mat4::perspectiveReverseZ(toRadians(m_fov), m_aspect, m_nearZ, m_farZ);
     }
 
     void Camera::applyMouseLook(float dx, float dy)
@@ -237,7 +261,7 @@ namespace nova
             // ---- Jump ----
             if (input.keys[SDL_SCANCODE_SPACE] && !m_spaceHeld && grounded)
             {
-                m_velocity.y = 270.0f; // Q2 jump speed
+                m_velocity.y = kJumpSpeed; // tune via kJumpSpeed constant at top of file
                 grounded = false;
             }
             m_spaceHeld = input.keys[SDL_SCANCODE_SPACE];
@@ -252,12 +276,11 @@ namespace nova
             }
             else
             {
-                // Ground friction — Q2 style: friction constant 6
-                const float friction = 6.0f;
+                // Ground friction — tune via kFriction
                 float spd = std::sqrt(m_velocity.x * m_velocity.x + m_velocity.z * m_velocity.z);
                 if (spd > 1.0f)
                 {
-                    float drop = spd * friction * dt;
+                    float drop = spd * kFriction * dt;
                     float scale = std::max(0.0f, (spd - drop) / spd);
                     m_velocity.x *= scale;
                     m_velocity.z *= scale;
@@ -272,8 +295,8 @@ namespace nova
             // ---- Horizontal acceleration (Q2 PM_Accelerate style) ----
             if (wishLen > 0.01f)
             {
-                // accel = 10 on ground, 1 in air
-                float accel = grounded ? 10.0f : 1.0f;
+                // tune via kGroundAccel / kAirControl
+                float accel = grounded ? kGroundAccel : kAirControl;
                 float curSpd = m_velocity.x * wishDir.x + m_velocity.z * wishDir.z;
                 float addSpd = speed - curSpd;
                 if (addSpd > 0.0f)

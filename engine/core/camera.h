@@ -89,8 +89,15 @@ private:
     float m_farZ   = 8192.f;
 
     // ---- Control settings ----
-    float m_moveSpeed = 400.f;   // units/s; Q2 maps are large
-    float m_lookSpeed = 0.08f;   // mouse sensitivity
+    float m_moveSpeed = 400.f;   // units/s — Q2 maps are large
+    // Mouse sensitivity in radians per raw pixel of SDL relative motion.
+    // SDL3 delivers xrel/yrel as raw pixel deltas at the hardware polling rate.
+    // At 800 DPI moving 1 inch = 800 pixels, so:
+    //   0.001 rad/px  →  800 * 0.001 = 0.8 rad (46°) per inch  — slow/precise
+    //   0.002 rad/px  →  800 * 0.002 = 1.6 rad (92°) per inch  — moderate default
+    //   0.004 rad/px  →  800 * 0.004 = 3.2 rad (183°) per inch — fast
+    // Tune to taste. The old value 0.08 was ~40× too fast for typical DPI.
+    float m_lookSpeed = 0.002f;
 
     // ---- Physics ----
     IPhysicsWorld* m_physics  = nullptr;

@@ -309,7 +309,7 @@ namespace nova
         void uploadToGPU(IRenderBackend *backend);
         void releaseGPU(IRenderBackend *backend);
         void setViewProj(const Mat4& vp) { m_viewProj = vp; m_hasViewProj = true; }
-        void render(IRenderBackend *backend);
+        void render(IRenderBackend *backend, const Vec3& cameraPos = Vec3{0.f,0.f,0.f});
 
         Vec3 getSpawnOrigin() const { return m_spawnOrigin; }
         Vec3 getSpawnAngles() const { return m_spawnAngles; }
@@ -332,6 +332,8 @@ namespace nova
 
     private:
         bool loadLumps(const uint8_t *data, size_t size);
+        int  findLeaf(const Vec3& pos) const;
+        void decompressPVS(int cluster, std::vector<uint8_t>& out) const;
         void freeLumps();
         void parseSpawnFromEntities();
         void buildFaces();
@@ -361,6 +363,15 @@ namespace nova
         std::vector<int> m_leafBrushes;
         std::string m_entities;
 
+        // ---- Visibility / PVS ----
+        std::vector<uint8_t> m_visData;  // raw vis lump bytes (whole lump)
+        int m_numClusters  = 0;          // from vis lump header
+        int m_clusterBytes = 0;          // (numClusters+7)/8 — bytes per decompressed row
+
+        // Per-frame decompression cache.  -2 forces the first decompression.
+        mutable int m_lastPVSCluster = -2;
+        mutable std::vector<uint8_t> m_cachedPVS;
+
         // ---- Intermediate geometry ----
         struct BSPVertexPacked // matches gl_backend.cpp 44-byte layout exactly
         {
@@ -382,7 +393,8 @@ namespace nova
             uint32_t vertCount = 0;   // vertex count for this surface
             uint32_t indexOffset = 0;
             int indexCount = 0;
-            int faceIndex = -1; // index into m_faces for lightmap UV lookup
+            int faceIndex    = -1; // index into m_faces for lightmap UV lookup
+            int clusterIndex = -1; // PVS cluster (-1 = always visible)
         };
         std::vector<Surface> m_surfaces;
 
@@ -398,8 +410,9 @@ namespace nova
             {
                 TextureHandle tex = INVALID_TEXTURE;
                 SamplerHandle samp = INVALID_SAMPLER;
-                int firstIndex = 0;
-                int indexCount = 0;
+                int firstIndex   = 0;
+                int indexCount   = 0;
+                int clusterIndex = -1; // PVS cluster (-1 = always visible)
             };
             std::vector<DrawBatch> batches;
         };

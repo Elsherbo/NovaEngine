@@ -1,15 +1,19 @@
 {
   "name": "nova-doc",
   "version": "1.0.0",
+  "description": "NOVA Engine documentation generators",
   "main": "generate.js",
+  "type": "commonjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build":     "node generate.js && node generate-md.js",
+    "docx":      "node generate.js",
+    "md":        "node generate-md.js",
+    "changelog": "node changelog.js",
+    "log":       "node changelog.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "Ahmed",
   "license": "ISC",
-  "type": "commonjs",
-  "description": "",
   "dependencies": {
     "docx": "^9.6.1"
   }
