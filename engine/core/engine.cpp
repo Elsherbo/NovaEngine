@@ -63,7 +63,9 @@
 #include "engine/entities/entity.h"
 #include "engine/entities/entity_list.h"
 #include "engine/entities/entity_factory.h"
+#include "engine/entities/igame_module.h"
 #include "engine/entities/map_loader.h"
+#include "engine/entities/game_dll_loader.h"
 #include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
@@ -206,6 +208,7 @@ void main()
 
         // Entity system (Problem 6)
         EntityHandle m_playerEntity;
+        GameDLLLoader m_gameDLL;
 
         struct PerFrameUBO
         {
@@ -406,6 +409,20 @@ void main()
                     log.info("Engine: %d entities spawned from map", spawned);
                 }
 
+                // ---- Game DLL load ----
+                if (gameDir && gameDir[0]) {
+                    std::string dllPath = gameDir;
+                    dllPath += "/nova_game.dll";
+                    if (m_gameDLL.load(dllPath.c_str())) {
+                        IGameModule* game = m_gameDLL.get();
+                        if (game) {
+                            game->setPhysicsWorld(m_physics);
+                            log.info("Engine: game DLL loaded");
+                            fprintf(stdout, "Engine: game DLL ready\n");
+                        }
+                    }
+                }
+
                 Vec3 spawn = m_bsp->getSpawnOrigin();
 
                 // ---- Physics setup ----
@@ -601,6 +618,9 @@ void main()
         delete m_camera;
         m_camera = nullptr;
 
+        // ---- Unload game DLL ----
+        m_gameDLL.unload();
+
         if (m_renderer)
         {
             m_renderer->shutdown();
@@ -744,6 +764,10 @@ void main()
 
         // ---- Entity think dispatch (Problem 6f) ----
         g_entityList.think(dt);
+
+        // ---- Game DLL think ----
+        if (IGameModule* game = m_gameDLL.get())
+            game->think(dt);
 
         // ---- Sync player entity origin from camera (Problem 6e) ----
         if (Entity* p = g_entityList.get(m_playerEntity))
