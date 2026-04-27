@@ -55,7 +55,7 @@ void EntityFactory::registerClass(const char* classname, SpawnFn fn)
 // Lookup
 // ============================================================
 
-EntityFactory::SpawnFn EntityFactory::lookup(const char* classname)
+SpawnFn EntityFactory::lookup(const char* classname)
 {
     for (int i = 0; i < s_count; ++i)
         if (std::strcmp(s_table[i].classname, classname) == 0)
@@ -69,7 +69,10 @@ EntityFactory::SpawnFn EntityFactory::lookup(const char* classname)
 
 Entity* EntityFactory::spawn(const char* classname, Vec3 origin)
 {
-    Entity* ent = g_entityList.create(classname);
+    EntityHandle h = g_entityList.create(classname);
+    if (!h.isValid()) return nullptr;
+
+    Entity* ent = g_entityList.get(h);
     if (!ent) return nullptr;
 
     ent->origin = origin;
