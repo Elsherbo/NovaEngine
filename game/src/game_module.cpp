@@ -13,6 +13,10 @@
 #include <cstring>
 #include <cstdio>
 
+// Helper macro for game module logging
+#define GAME_INFO(msg, ...)  ::nova::Logger::instance().info(msg, ##__VA_ARGS__)
+#define GAME_WARN(msg, ...) ::nova::Logger::instance().warn(msg, ##__VA_ARGS__)
+
 namespace nova
 {
 
@@ -36,7 +40,7 @@ GameModule::~GameModule()
 // -----------------------------------------------------------------------
 bool GameModule::init()
 {
-    fprintf(stdout, "GameModule: initializing...\n");
+    GAME_INFO("GameModule: initializing...");
 
     m_playerHealth = 100.0f;
     m_playerArmor = 0.0f;
@@ -46,7 +50,7 @@ bool GameModule::init()
 
     m_weapons = 0;
 
-    fprintf(stdout, "GameModule: ready\n");
+    GAME_INFO("GameModule: ready");
     return true;
 }
 
@@ -55,7 +59,7 @@ bool GameModule::init()
 // -----------------------------------------------------------------------
 void GameModule::shutdown()
 {
-    fprintf(stdout, "GameModule: shutdown\n");
+    GAME_INFO("GameModule: shutdown");
 }
 
 // -----------------------------------------------------------------------
