@@ -69,7 +69,7 @@ private:
     static Entry s_table[kMaxClasses];
     static int   s_count;
 
-    static SpawnFn lookup(const char* classname);
+    static void (*lookup(const char* classname))(Entity*);
 };
 
 } // namespace nova

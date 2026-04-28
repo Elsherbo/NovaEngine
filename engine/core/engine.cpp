@@ -206,7 +206,8 @@ void main()
         IPhysicsWorld *m_physics = nullptr;
         AssetFS m_assets;
 
-        // Entity system (Problem 6)
+        // Entity system
+        EntityList   m_entityList;
         EntityHandle m_playerEntity;
         GameDLLLoader m_gameDLL;
 
@@ -386,6 +387,22 @@ void main()
                 fprintf(stdout, "Assets: mounted Quake2 pak0 '%s'\n", pak0.c_str());
         }
 
+        // ---- Game DLL ----
+        // Load before BSP so game->loadMap() can be called immediately after upload.
+        if (gameDir && gameDir[0] != '\0')
+        {
+            std::string dllPath = std::string(gameDir) + "/nova_game.dll";
+            if (m_gameDLL.load(dllPath.c_str()))
+            {
+                log.info("Engine: game DLL loaded");
+                fprintf(stdout, "Engine: game DLL ready\n");
+            }
+            else
+            {
+                log.warn("Engine: game DLL not found, running engine-only");
+            }
+        }
+
         // ---- BSP + Physics ----
         if (bspPath && bspPath[0] != '\0')
         {
@@ -401,46 +418,25 @@ void main()
             {
                 m_bsp->uploadToGPU(m_renderer);
 
-                // ---- Spawn BSP entities ----
-                EntityFactory::init();
-                int spawned = 0;
-                if (m_bsp) {
-                    spawned = MapLoader::load(m_bsp);
-                    log.info("Engine: %d entities spawned from map", spawned);
-                }
-
-                // ---- Game DLL load ----
-                if (gameDir && gameDir[0]) {
-                    std::string dllPath = gameDir;
-                    dllPath += "/nova_game.dll";
-                    if (m_gameDLL.load(dllPath.c_str())) {
-                        IGameModule* game = m_gameDLL.get();
-                        if (game) {
-                            game->setPhysicsWorld(m_physics);
-                            log.info("Engine: game DLL loaded");
-                            fprintf(stdout, "Engine: game DLL ready\n");
-                        }
-                    }
-                }
+                // ---- Spawn BSP entities via game module ----
+                if (IGameModule* game = m_gameDLL.get())
+                    game->loadMap(m_bsp);
 
                 Vec3 spawn = m_bsp->getSpawnOrigin();
 
                 // ---- Physics setup ----
-                // Order matters:
-                //   1. Create physics
-                //   2. Set world geometry
-                //   3. Set hull bounds
-                //   4. Set entity storage (MUST be before any trace/setOrigin calls)
-                //   5. Wire camera entity handle and physics pointer
-                //   6. Run spawn floor trace
-                //   7. Write spawn position into storage + camera simultaneously
-
+                // Game DLL provides player bounds via getPlayerBounds() (not implemented yet)
+                // For now, use default player size
                 const Vec3 playerMins = {-16.f, -36.f, -16.f};
                 const Vec3 playerMaxs = {16.f, 36.f, 16.f};
 
                 m_physics = new AABBPhysics();
                 m_physics->setWorld(m_bsp);
                 static_cast<AABBPhysics *>(m_physics)->setPlayerBounds(playerMins, playerMaxs);
+
+                // Wire physics into game DLL now that it's constructed.
+                if (IGameModule* game = m_gameDLL.get())
+                    game->setPhysicsWorld(m_physics);
 
                 // Step 4: storage must be valid before ANY trace or setOrigin call
                 static_cast<AABBPhysics *>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
@@ -506,14 +502,18 @@ void main()
                 // ---- Create player entity in EntityList (Problem 6c) ----
                 // This is a game-logic copy of the player; AABBPhysics continues
                 // to use the external m_cameraPosition/m_cameraVelocity storage.
-                m_playerEntity = g_entityList.create("player");
-                if (Entity* p = g_entityList.get(m_playerEntity))
+                m_playerEntity = m_entityList.create("player");
+                if (Entity* p = m_entityList.get(m_playerEntity))
                 {
                     p->origin   = safeSpawn;
                     p->velocity = Vec3{0.f, 0.f, 0.f};
                     p->mins     = playerMins;
                     p->maxs     = playerMaxs;
                     p->state    = STATE_ALIVE;
+
+                    // Notify game DLL about player spawn
+                    if (IGameModule* game = m_gameDLL.get())
+                        game->onEntitySpawn(m_playerEntity);
                 }
             }
         }
@@ -763,14 +763,14 @@ void main()
         m_camera->update(input, dt);
 
         // ---- Entity think dispatch (Problem 6f) ----
-        g_entityList.think(dt);
+        m_entityList.think(dt);
 
         // ---- Game DLL think ----
         if (IGameModule* game = m_gameDLL.get())
             game->think(dt);
 
         // ---- Sync player entity origin from camera (Problem 6e) ----
-        if (Entity* p = g_entityList.get(m_playerEntity))
+        if (Entity* p = m_entityList.get(m_playerEntity))
             p->origin = m_camera->getPosition();
     }
 

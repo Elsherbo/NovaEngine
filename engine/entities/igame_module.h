@@ -23,6 +23,7 @@ class IPhysicsWorld;
 class IAudioSystem;
 class INetworkSystem;
 struct IPlatform;
+class BSPMap;   // NEW: forward so IGameModule::loadMap can accept BSPMap*
 
 // -----------------------------------------------------------------------
 // IGameModule - pure virtual interface
@@ -36,6 +37,11 @@ public:
     // ---- Lifecycle ----
     virtual bool init() = 0;
     virtual void shutdown() = 0;
+
+    // ---- Map loading (NEW) ----
+    // Called by the engine after BSP::load() succeeds.
+    // Implementations call EntityFactory::init() then MapLoader::load(map).
+    virtual void loadMap(const BSPMap* map) = 0;
 
     // ---- Per-frame updates ----
     virtual void think(float dt) = 0;

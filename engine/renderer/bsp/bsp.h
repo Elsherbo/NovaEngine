@@ -313,6 +313,7 @@ namespace nova
 
         Vec3 getSpawnOrigin() const { return m_spawnOrigin; }
         Vec3 getSpawnAngles() const { return m_spawnAngles; }
+        /// Raw entity lump string — used by MapLoader to spawn game entities.
         const char* getEntityString() const { return m_entities.c_str(); }
 
         // ---- IBSPCollisionWorld implementation ----

@@ -8,6 +8,9 @@
 
 #include "engine/entities/entity_list.h"
 #include "engine/entities/entity.h"
+#include "engine/entities/entity_factory.h"
+#include "engine/entities/map_loader.h"
+#include "engine/renderer/bsp/bsp.h"
 #include "engine/core/log.h"
 
 #include <cstring>
@@ -60,6 +63,17 @@ bool GameModule::init()
 void GameModule::shutdown()
 {
     GAME_INFO("GameModule: shutdown");
+}
+
+// -----------------------------------------------------------------------
+// loadMap - parse BSP entity lump and spawn all game entities
+// -----------------------------------------------------------------------
+void GameModule::loadMap(const BSPMap* map)
+{
+    if (!map) return;
+    EntityFactory::init();
+    int count = MapLoader::load(map);
+    GAME_INFO("GameModule: loadMap spawned %d entities", count);
 }
 
 // -----------------------------------------------------------------------

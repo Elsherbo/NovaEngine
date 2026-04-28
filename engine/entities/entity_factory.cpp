@@ -8,12 +8,11 @@
 // ============================================================
 
 #include "engine/entities/entity_factory.h"
-#include "engine/entities/entity_list.h"
+#include "engine/entities/entity_list.h"   // provides g_entityList
 
-#include <cstring>   // strcmp, strncpy, strchr
-#include <cstdio>    // sscanf, fprintf
+#include <cstring>   // strcmp, strncpy
+#include <cstdio>    // fprintf, sscanf
 #include <cstdlib>   // strtol, strtof
-#include <cctype>    // isspace
 
 namespace nova
 {
@@ -24,9 +23,6 @@ namespace nova
 
 EntityFactory::Entry EntityFactory::s_table[kMaxClasses];
 int                  EntityFactory::s_count = 0;
-
-// Defined in entity_list.cpp and declared extern there
-extern EntityList g_entityList;
 
 // ============================================================
 // Registration
@@ -55,7 +51,7 @@ void EntityFactory::registerClass(const char* classname, SpawnFn fn)
 // Lookup
 // ============================================================
 
-SpawnFn EntityFactory::lookup(const char* classname)
+void (*EntityFactory::lookup(const char* classname))(Entity*)
 {
     for (int i = 0; i < s_count; ++i)
         if (std::strcmp(s_table[i].classname, classname) == 0)
@@ -69,10 +65,10 @@ SpawnFn EntityFactory::lookup(const char* classname)
 
 Entity* EntityFactory::spawn(const char* classname, Vec3 origin)
 {
-    EntityHandle h = g_entityList.create(classname);
-    if (!h.isValid()) return nullptr;
+    EntityHandle handle = g_entityList.create(classname);
+    if (!handle.isValid()) return nullptr;
 
-    Entity* ent = g_entityList.get(h);
+    Entity* ent = g_entityList.get(handle);
     if (!ent) return nullptr;
 
     ent->origin = origin;
@@ -130,24 +126,18 @@ float EntityFactory::parseFloat(const char* str)
 // Built-in spawn functions
 // ============================================================
 
-// --- worldspawn ---
 static void spawn_worldspawn(Entity* ent)
 {
-    // Singleton map-settings entity; immovable, non-solid from physics PoV.
     ent->flags |= FL_NOTARGET;
-    // mins/maxs stay zero — worldspawn bounds come from the BSP model lump.
 }
 
-// --- info_player_start ---
 static void spawn_info_player_start(Entity* ent)
 {
-    // Reference point only — passable, no collision.
     ent->flags |= FL_NOTARGET;
     ent->mins = Vec3{0.f, 0.f, 0.f};
     ent->maxs = Vec3{0.f, 0.f, 0.f};
 }
 
-// --- info_player_deathmatch ---
 static void spawn_info_player_deathmatch(Entity* ent)
 {
     ent->flags |= FL_NOTARGET;
@@ -155,32 +145,26 @@ static void spawn_info_player_deathmatch(Entity* ent)
     ent->maxs = Vec3{0.f, 0.f, 0.f};
 }
 
-// --- func_door ---
 static void spawn_func_door(Entity* ent)
 {
-    // Solid door — game logic sets think/use for movement.
     ent->mins = Vec3{-16.f, -4.f, -16.f};
     ent->maxs = Vec3{ 16.f,  4.f,  16.f};
     ent->health = 0.f;
 }
 
-// --- func_button ---
 static void spawn_func_button(Entity* ent)
 {
     ent->mins = Vec3{-8.f, -8.f, -8.f};
     ent->maxs = Vec3{ 8.f,  8.f,  8.f};
 }
 
-// --- trigger_multiple ---
 static void spawn_trigger_multiple(Entity* ent)
 {
-    // Triggers are passable — overlapping hull fires the touch callback.
     ent->flags |= FL_NOTARGET;
     ent->mins = Vec3{-16.f, -16.f, -16.f};
     ent->maxs = Vec3{ 16.f,  16.f,  16.f};
 }
 
-// --- trigger_push ---
 static void spawn_trigger_push(Entity* ent)
 {
     ent->flags |= FL_NOTARGET;
@@ -188,23 +172,20 @@ static void spawn_trigger_push(Entity* ent)
     ent->maxs = Vec3{ 16.f,  16.f,  16.f};
 }
 
-// --- item_health ---
 static void spawn_item_health(Entity* ent)
 {
-    ent->health   = 25.f;
+    ent->health    = 25.f;
     ent->maxHealth = 25.f;
-    ent->mins     = Vec3{-16.f, -16.f, -16.f};
-    ent->maxs     = Vec3{ 16.f,  16.f,  16.f};
+    ent->mins      = Vec3{-16.f, -16.f, -16.f};
+    ent->maxs      = Vec3{ 16.f,  16.f,  16.f};
 }
 
-// --- item_shells ---
 static void spawn_item_shells(Entity* ent)
 {
     ent->mins = Vec3{-16.f, -16.f, -16.f};
     ent->maxs = Vec3{ 16.f,  16.f,  16.f};
 }
 
-// --- weapon_blaster ---
 static void spawn_weapon_blaster(Entity* ent)
 {
     ent->mins = Vec3{-16.f, -16.f, -16.f};
@@ -217,7 +198,7 @@ static void spawn_weapon_blaster(Entity* ent)
 
 void EntityFactory::init()
 {
-    s_count = 0; // allow safe re-init
+    s_count = 0; // safe re-init
 
     registerClass("worldspawn",              spawn_worldspawn);
     registerClass("info_player_start",       spawn_info_player_start);
