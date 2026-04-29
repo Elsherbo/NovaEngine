@@ -19,6 +19,7 @@ target_include_directories(nova_game PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/physics
     ${CMAKE_SOURCE_DIR}/engine/renderer
     ${CMAKE_SOURCE_DIR}/engine/platform
+    ${CMAKE_SOURCE_DIR}/vendor/SDL3/include
 )
 
 target_link_libraries(nova_game PRIVATE

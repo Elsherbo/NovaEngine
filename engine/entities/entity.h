@@ -5,7 +5,8 @@
 // STATUS:  IN_PROGRESS
 // PURPOSE: Base entity structure.
 //          All game objects (players, items, doors) derive from this.
-// DEPENDS:  core/math (Vec3, AABB), entities/entity_id.h
+// DEPENDS:  core/math (Vec3, AABB), entities/entity_id.h,
+//          entities/property_store.h
 // ============================================================
 
 #pragma once
@@ -13,6 +14,7 @@
 #include "engine/core/math/vec.h"
 #include "engine/core/math/shapes.h"
 #include "engine/entities/entity_id.h"
+#include "engine/entities/property_store.h"
 
 namespace nova
 {
@@ -126,6 +128,22 @@ struct Entity
     EntityHandle client = EntityHandle();  // client index for players
     int    ping = 0;
     int    playerNum = 0;
+
+    // ---- Property access (custom keys from TrenchBroom) ----
+    const char* getProperty(const std::string& key) const
+    {
+        return g_propertyStore.get(handle.index(), key);
+    }
+
+    void setProperty(const std::string& key, const std::string& val)
+    {
+        g_propertyStore.set(handle.index(), key, val);
+    }
+
+    bool hasProperty(const std::string& key) const
+    {
+        return g_propertyStore.has(handle.index(), key);
+    }
 };
 
 // -----------------------------------------------------------------------

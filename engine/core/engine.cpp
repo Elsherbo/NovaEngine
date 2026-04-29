@@ -69,6 +69,10 @@
 #include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
+// Game-module PlayerController (compiled into nova_engine/nova_player,
+// drives the camera from physics in the engine main loop).
+#include "engine/player/player_controller.h"
+
 // Let SDL3 handle the entry point - it will call our main()
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL.h>
@@ -202,6 +206,7 @@ void main()
         IPlatform *m_platform = nullptr;
         IRenderBackend *m_renderer = nullptr;
         Camera *m_camera = nullptr;
+        PlayerController *m_playerCtrl = nullptr;   // owns all movement physics
         BSPMap *m_bsp = nullptr;
         IPhysicsWorld *m_physics = nullptr;
         AssetFS m_assets;
@@ -227,8 +232,9 @@ void main()
         int m_debugIndexCount = 0;
         int m_debugView = 0; // 0=lit, 1=lightmap gray, 2=lightmap boosted, 3=lm uv
 
-        // External storage for physics (wired to AABBPhysics via setEntityStorage)
-        // Kept alongside EntityList — AABBPhysics requires raw Vec3* pointers.
+        // External storage for physics (wired to AABBPhysics via setEntityStorage).
+        // PlayerController reads/writes through IPhysicsWorld; these backing
+        // arrays are the concrete storage AABBPhysics points at.
         Vec3 m_cameraPosition = {0, 0, 0};
         Vec3 m_cameraVelocity = {0, 0, 0};
 
@@ -350,6 +356,9 @@ void main()
         // causes z-fighting on coplanar/near-coplanar BSP surfaces.
         m_camera->setNearFar(2.0f, 4096.0f);
 
+        // ---- PlayerController ----
+        m_playerCtrl = new PlayerController();
+
         // ---- Assets ----
         auto dirOf = [](const std::string& p) -> std::string
         {
@@ -380,12 +389,17 @@ void main()
             m_assets.mountDirectory(gameDir);
             fprintf(stdout, "Assets: mounted game dir '%s'\n", gameDir);
             std::string pak0 = std::string(gameDir);
-            if (!pak0.empty() && pak0.back() != '\\' && pak0.back() != '/')
-                pak0 += "\\";
+            if (!pak0.empty() && pak0.back() != '/')
+                pak0 += "/";
             pak0 += "pak0.pak";
             if (m_assets.mountQuake2Pak(pak0))
                 fprintf(stdout, "Assets: mounted Quake2 pak0 '%s'\n", pak0.c_str());
         }
+
+        // ---- Entity factory ----
+        // Must be called before BSP load so MapLoader::load() finds all spawn functions.
+        EntityFactory::init();
+        fprintf(stdout, "Engine: EntityFactory initialized (%d built-in classes)\n", EntityFactory::classCount());
 
         // ---- Game DLL ----
         // Load before BSP so game->loadMap() can be called immediately after upload.
@@ -418,7 +432,14 @@ void main()
             {
                 m_bsp->uploadToGPU(m_renderer);
 
-                // ---- Spawn BSP entities via game module ----
+                // ---- Spawn BSP entities (engine-side, always runs) ----
+                {
+                    MapLoader mapLoader;
+                    int spawned = mapLoader.load(m_bsp);
+                    fprintf(stdout, "Engine: MapLoader spawned %d entities from BSP lump\n", spawned);
+                }
+
+                // ---- Notify game module (if DLL is loaded) ----
                 if (IGameModule* game = m_gameDLL.get())
                     game->loadMap(m_bsp);
 
@@ -441,10 +462,10 @@ void main()
                 // Step 4: storage must be valid before ANY trace or setOrigin call
                 static_cast<AABBPhysics *>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
 
-                // Step 5: wire both the entity handle AND the physics pointer into camera
+                // Step 5: wire physics into PlayerController
                 EntityHandle camEntity = EntityHandle::make(0, 1);
-                m_camera->setEntity(camEntity);
-                m_camera->setPhysicsWorld(m_physics);
+                m_playerCtrl->setPhysicsWorld(m_physics);
+                m_playerCtrl->setEntity(camEntity);
 
                 // Step 6: sweep player hull down from well above spawn to land on floor
                 Vec3 traceStart = spawn;
@@ -492,6 +513,7 @@ void main()
                 m_physics->setOrigin(camEntity, safeSpawn);
                 m_physics->setVelocity(camEntity, {0.f, 0.f, 0.f});
                 m_camera->setPosition(safeSpawn);
+                m_playerCtrl->setPosition(safeSpawn);
 
                 if (m_bsp->getSpawnAngles().y != 0.f)
                     m_camera->setYaw(m_bsp->getSpawnAngles().y);
@@ -614,6 +636,9 @@ void main()
             if (m_whiteSampler != INVALID_SAMPLER)
                 m_renderer->destroySampler(m_whiteSampler);
         }
+
+        delete m_playerCtrl;
+        m_playerCtrl = nullptr;
 
         delete m_camera;
         m_camera = nullptr;
@@ -760,7 +785,20 @@ void main()
         }
         prevF3 = f3Down;
 
-        m_camera->update(input, dt);
+        // ---- Mouse look ----
+        m_camera->applyMouseLook(
+            static_cast<float>(input.mouseDeltaX),
+            static_cast<float>(input.mouseDeltaY));
+
+        // ---- PlayerController: movement physics ----
+        if (m_playerCtrl)
+        {
+            m_playerCtrl->update(input, dt,
+                                  m_camera->getForward(),
+                                  m_camera->getRight());
+            // Sync camera position from physics result
+            m_camera->setPosition(m_playerCtrl->getEyePosition());
+        }
 
         // ---- Entity think dispatch (Problem 6f) ----
         m_entityList.think(dt);

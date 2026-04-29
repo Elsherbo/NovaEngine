@@ -63,6 +63,7 @@ set_source_files_properties(vendor/GLAD/src/glad.c PROPERTIES
 )
 target_link_libraries(nova_app PRIVATE
     nova_engine
+    nova_game
     ${SDL3_LIBRARY}
     nova_vendor_glad
     opengl32
@@ -71,7 +72,9 @@ target_link_libraries(nova_app PRIVATE
     -limm32
     -lversion
 )
-target_include_directories(nova_app PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(nova_app PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
 set_target_properties(nova_app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )

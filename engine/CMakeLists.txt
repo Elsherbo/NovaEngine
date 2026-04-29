@@ -27,6 +27,10 @@ target_link_libraries(nova_engine PUBLIC nova_physics)
 add_subdirectory(entities)
 target_link_libraries(nova_engine PUBLIC nova_entities)
 
+# Player controller (engine-side — drives the main loop, not game logic)
+add_subdirectory(player)
+target_link_libraries(nova_engine PUBLIC nova_player)
+
 # Audio
 # add_subdirectory(audio)
 # target_link_libraries(nova_engine PUBLIC nova_audio)

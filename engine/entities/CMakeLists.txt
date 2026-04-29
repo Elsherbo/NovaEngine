@@ -9,6 +9,7 @@ add_library(nova_entities STATIC
     entity_list.cpp
     entity_factory.h
     entity_factory.cpp
+    property_store.h
     map_loader.h
     map_loader.cpp
     igame_module.h

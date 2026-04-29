@@ -43,6 +43,9 @@ struct EntityFactory
     /// Register all built-in entity types. Call before MapLoader::load().
     static void init();
 
+    /// Returns the number of registered classes (useful for diagnostics).
+    static int classCount() { return s_count; }
+
     // ---- Parsing helpers -----------------------------------------------
     // Pure functions — no side-effects, usable anywhere.
 

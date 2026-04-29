@@ -107,8 +107,8 @@ namespace nova
         for (auto it = m_dirs.rbegin(); it != m_dirs.rend(); ++it)
         {
             std::string full = it->root;
-            if (!full.empty() && full.back() != '\\' && full.back() != '/')
-                full += "\\";
+            if (!full.empty() && full.back() != '/')
+                full += "/";
             full += key;
 
             FILE* f = fopen(full.c_str(), "rb");
@@ -134,8 +134,8 @@ namespace nova
         for (auto it = m_dirs.rbegin(); it != m_dirs.rend(); ++it)
         {
             std::string full = it->root;
-            if (!full.empty() && full.back() != '\\' && full.back() != '/')
-                full += "\\";
+            if (!full.empty() && full.back() != '/')
+                full += "/";
             full += key;
 
             if (fileReadAllBytes(full, out))

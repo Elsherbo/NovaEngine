@@ -12,6 +12,7 @@
 #include "engine/entities/map_loader.h"
 #include "engine/entities/entity_factory.h"
 #include "engine/entities/entity_list.h"
+#include "engine/entities/property_store.h"
 #include "engine/renderer/bsp/bsp.h"
 
 #include <cstring>   // strncpy, strcmp, strlen, strncmp
@@ -282,6 +283,23 @@ int MapLoader::load(const BSPMap* map)
             std::strncpy(ent->model,      tnStr, 15);
         if (const char* tStr  = pe.get("target"))
             std::strncpy(ent->model + 16, tStr,  15);
+
+        // ---- Store remaining keys in PropertyStore (TrenchBroom custom keys) ----
+        uint16_t entIdx = ent->handle.index();
+        for (int i = 0; i < pe.count; ++i)
+        {
+            const char* k = pe.pairs[i].key;
+            // Skip keys we've already handled
+            if (std::strcmp(k, "classname") == 0) continue;
+            if (std::strcmp(k, "origin") == 0) continue;
+            if (std::strcmp(k, "angles") == 0) continue;
+            if (std::strcmp(k, "angle") == 0) continue;
+            if (std::strcmp(k, "spawnflags") == 0) continue;
+            if (std::strcmp(k, "health") == 0) continue;
+            if (std::strcmp(k, "targetname") == 0) continue;
+            if (std::strcmp(k, "target") == 0) continue;
+            g_propertyStore.set(entIdx, k, pe.pairs[i].val);
+        }
 
         // ---- Diagnostics ----
         fprintf(stdout, "MapLoader: spawned '%s' at (%.0f, %.0f, %.0f)\n",
