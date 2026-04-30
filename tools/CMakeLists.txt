@@ -1,13 +1,10 @@
 # tools/CMakeLists.txt
-# Offline compile tools: qbsp, light, vis.
-# Each becomes its own executable in Phase 1 (light/vis) or Phase 2 (qbsp).
-
-# add_subdirectory(qbsp)
-# add_subdirectory(light)
-# add_subdirectory(vis)
+# Map compilation using ericw-tools
 
 # 1. Setup Paths
-set(Q2TOOL_PATH "${CMAKE_SOURCE_DIR}/tools/external/q2tools/bin/q2tool.exe")
+set(QBSP_EXE "${CMAKE_SOURCE_DIR}/tools/external/ericw-tools/qbsp.exe")
+set(VIS_EXE "${CMAKE_SOURCE_DIR}/tools/external/ericw-tools/vis.exe")
+set(LIGHT_EXE "${CMAKE_SOURCE_DIR}/tools/external/ericw-tools/light.exe")
 set(ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
 set(MAP_SRC_DIR "${ASSETS_DIR}/maps")
 set(MAP_OUT_DIR "${CMAKE_BINARY_DIR}/assets/maps")
@@ -15,34 +12,45 @@ set(MAP_OUT_DIR "${CMAKE_BINARY_DIR}/assets/maps")
 # Ensure output directory exists
 file(MAKE_DIRECTORY ${MAP_OUT_DIR})
 
+# Copy textures to build for BSP loader
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/assets/textures")
+file(COPY "${ASSETS_DIR}/textures" DESTINATION "${CMAKE_BINARY_DIR}/assets")
+
+# Copy pics (for palette)
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/assets/pics")
+file(COPY "${ASSETS_DIR}/pics" DESTINATION "${CMAKE_BINARY_DIR}/assets")
+
 # 2. Map Compilation Function
 function(add_nova_map MAP_NAME)
+    # BSP pass - writes to source dir
     add_custom_command(
-        OUTPUT "${MAP_OUT_DIR}/${MAP_NAME}.bsp"
-        # q2tool flags:
-        # -b: BSP pass (with -v220 for TrenchBroom)
-        # -v: VIS pass (calculates what is visible)
-        # -l: RAD/Light pass (bakes lighting)
-        # -f: Force overwrite
-        # -basedir: Points to where your textures/WADs are
-        COMMAND ${Q2TOOL_PATH} -b -v220 -v -l -f 
-                -basedir "${ASSETS_DIR}" 
-                "${MAP_SRC_DIR}/${MAP_NAME}.map"
-        
-        # Copy the resulting BSP to the output folder after compilation
-        COMMAND ${CMAKE_COMMAND} -E copy "${MAP_SRC_DIR}/${MAP_NAME}.bsp" "${MAP_OUT_DIR}/${MAP_NAME}.bsp"
-        
+        OUTPUT "${MAP_SRC_DIR}/${MAP_NAME}.bsp"
+        COMMAND ${QBSP_EXE} -q2bsp "${MAP_SRC_DIR}/${MAP_NAME}.map"
         DEPENDS "${MAP_SRC_DIR}/${MAP_NAME}.map"
-        COMMENT "NovaEngine: Compiling and Baking ${MAP_NAME}..."
+        COMMENT "NovaEngine: Compiling BSP ${MAP_NAME}..."
         WORKING_DIRECTORY ${MAP_SRC_DIR}
     )
-
-    # Create a target so you can run 'make map_test' or build it in your IDE
-    add_custom_target(map_${MAP_NAME} ALL DEPENDS "${MAP_OUT_DIR}/${MAP_NAME}.bsp")
+    
+    # Copy BSP to build dir
+    add_custom_command(
+        OUTPUT "${MAP_OUT_DIR}/${MAP_NAME}.bsp"
+        COMMAND ${CMAKE_COMMAND} -E copy "${MAP_SRC_DIR}/${MAP_NAME}.bsp" "${MAP_OUT_DIR}/${MAP_NAME}.bsp"
+        DEPENDS "${MAP_SRC_DIR}/${MAP_NAME}.bsp"
+        COMMENT "NovaEngine: Copying ${MAP_NAME}.bsp to build..."
+    )
+    
+    # VIS pass (skip for now - needs correct BSP path)
+    # Light pass (skip for now - needs correct BSP path)
+    
+    # Final BSP target 
+    add_custom_target(map_${MAP_NAME} ALL 
+        DEPENDS "${MAP_OUT_DIR}/${MAP_NAME}.bsp"
+    )
+    
+    add_custom_target(build_${MAP_NAME} DEPENDS map_${MAP_NAME})
 endfunction()
 
 # 3. Register your maps here
-# Example: If you have assets/maps/test_room.map
-# add_nova_map(test_room)
+add_nova_map(test)
 
 add_custom_target(nova_tools_placeholder)

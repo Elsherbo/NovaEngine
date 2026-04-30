@@ -30,9 +30,22 @@ EntityList::EntityList()
     for (size_t i = 0; i < kMaxEntities; ++i)
         m_active[i] = 0;
 
-    // Pre-populate free list with slots 0..kMaxEntities-1, generation 0
+    // Pre-populate free list so that create() pops index 0 FIRST.
+    //
+    // FIX: The old code filled m_freeList[i] = EntityID(i, 0) and then
+    // create() did --m_freeCount and popped m_freeList[m_freeCount].
+    // Because m_freeCount starts at kMaxEntities, the FIRST pop gave
+    // m_freeList[kMaxEntities-1] = EntityID(1023, 0) — index 1023.
+    //
+    // AABBPhysics::setEntityStorage is called with count=1, so
+    // isValidEntityIndex(handle_1023, 1) = (1023 < 1) = false.
+    // Every physics call on the player entity silently returned Vec3{0,0,0},
+    // teleporting the player to the world origin every frame.
+    //
+    // Fix: fill in REVERSE order so that m_freeList[kMaxEntities-1] = EntityID(0,0).
+    // First pop → m_freeList[kMaxEntities-1] = EntityID(0,0). Index 0. ✓
     for (size_t i = 0; i < kMaxEntities; ++i)
-        m_freeList[i] = EntityID::make(static_cast<uint16_t>(i), 0);
+        m_freeList[i] = EntityID::make(static_cast<uint16_t>(kMaxEntities - 1 - i), 0);
 
     m_freeCount  = kMaxEntities;
     m_activeCount = 0;

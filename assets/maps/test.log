@@ -1,0 +1,108 @@
+---- qbsp / ericw-tools 2.0.0-alpha10 ----
+
+--- Options Summary ---
+    "q2bsp" was set to "1" (from command line)
+    "chop" was set to "1" (from game target)
+    "maxedges" was set to "0" (from game target)
+
+Input file: D:\coding\cpp\novaEngine\assets\maps\test.map
+Output file: D:\coding\cpp\novaEngine\assets\maps\test.bsp
+
+using gamedir: 'D:\coding\cpp\novaEngine\assets'
+WARNING: failed to find basedir 'D:\coding\cpp\novaEngine\baseq2'
+WARNING: Couldn't locate texture for skip
+     6 entities
+     7 unique textures
+    61 texinfos
+    34 unique planes
+
+INFO: world extents calculated to 568 units
+    11 brushes
+    66 sides
+
+Processing map...
+    11 SOLID brushes
+    11 brushes total
+    66 visible sides
+INFO: calculating BSP for 11 brushes with 66 sides
+chopped 11 brushes into 11
+    11 brushes
+    66 visible faces
+    40 nodes
+    40 expensive split nodes
+    41 leaves
+    30 EMPTY leafs
+    11 SOLID leafs
+    41 leafs total
+    11 max tree height
+     7 avg tree height
+    186 tree portals
+    26 outside leaves
+    0 detail filled leafs
+    11 brushes
+    14 visible faces
+    52 non-visible faces
+    40 nodes
+    30 non-visible nodes
+    40 expensive split nodes
+    41 leaves
+    30 EMPTY leafs
+    11 SOLID leafs
+    41 leafs total
+    11 max tree height
+     7 avg tree height
+    186 tree portals
+    26 outside leaves
+    0 detail filled leafs
+    1 areas
+    1 area portals
+    186 tree portals
+    56 sides visible
+    28 makefaces
+     8 merged
+    24 subdivided
+    30 nodes pruned
+    4 player-occupiable leaves
+    4 clusters of leaves
+    4 vis portals
+     7 SOLID leafs
+     4 EMPTY leafs
+    11 leafs total
+    11 max tree height
+     6 avg tree height
+     52 edges added by tjunctions
+     44 faces optimized through MWT
+    140 triangles computed from MWT
+     14 faces created via optimization of MWT triangles
+    128 edges
+     58 faces
+    11 total brushes
+    66 total brush sides
+    11 total leaf brushes
+    19 optimized brush side texinfos
+Writing test.bsp as Quake II BSP IBSP:38
+Wrote test.bsp
+
+count   lump name    byte size 
+      1 models               48
+     26 planes              520
+     70 vertexes            840
+     10 nodes               280
+     41 texinfos           3116
+     58 faces              1160
+     12 leafs               336
+     74 leaffaces           148
+     11 leafbrushes          22
+    129 edges               516
+    256 surfedges          1024
+     11 brushes             132
+     66 brushsides          264
+      2 areas                16
+      1 areaportals           8
+        lightdata             0
+        visdata               0
+        entdata             298
+
+0.016s seconds elapsed
+
+

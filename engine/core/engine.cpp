@@ -183,7 +183,8 @@ void main()
     }
 
     vec3 base = texture(uDiffuse, vUv).rgb * vColor.rgb;
-    vec3 lit = max(lm, vec3(0.22));
+    // Lightmap already encodes actual brightness - no artificial boost needed
+    vec3 lit = lm;
     fragColor = vec4(base * lit, 1.0);
 }
 )";
@@ -310,6 +311,9 @@ void main()
             return false;
         }
 
+        // ---- AssetFS ----
+        // Assets are mounted from bspDir/gameDir in step below
+
         SDL_ShowWindow(win);
         SDL_RaiseWindow(win);
         // FIX 2: SDL3 relative mouse mode — delivers per-frame deltas via
@@ -358,6 +362,7 @@ void main()
 
         // ---- PlayerController ----
         m_playerCtrl = new PlayerController();
+        m_playerCtrl->setPhysicsWorld(m_physics);
 
         // ---- Assets ----
         auto dirOf = [](const std::string& p) -> std::string
@@ -372,6 +377,8 @@ void main()
             const std::string bspFile = bspPath;
             const std::string bspDir = dirOf(bspFile);   // .../maps
             const std::string bspRoot = dirOf(bspDir);   // .../<map-pack-root>
+            fprintf(stdout, "DEBUG: bspPath='%s'\n", bspPath);
+            fprintf(stdout, "DEBUG: bspDir='%s', bspRoot='%s'\n", bspDir.c_str(), bspRoot.c_str());
             if (!bspRoot.empty())
             {
                 m_assets.mountDirectory(bspRoot);
@@ -401,6 +408,10 @@ void main()
         EntityFactory::init();
         fprintf(stdout, "Engine: EntityFactory initialized (%d built-in classes)\n", EntityFactory::classCount());
 
+        // Standard player hull (32 units tall, 24 wide)
+        const Vec3 playerMins = {-16.f, -16.f, 0.f};
+        const Vec3 playerMaxs = { 16.f,  16.f, 56.f};
+
         // ---- Game DLL ----
         // Load before BSP so game->loadMap() can be called immediately after upload.
         if (gameDir && gameDir[0] != '\0')
@@ -421,6 +432,7 @@ void main()
         if (bspPath && bspPath[0] != '\0')
         {
             m_bsp = new BSPMap();
+            // MUST set AssetFS BEFORE load so textures can be loaded
             m_bsp->setAssetFS(&m_assets);
             if (!m_bsp->load(m_platform, bspPath))
             {
@@ -431,6 +443,13 @@ void main()
             else
             {
                 m_bsp->uploadToGPU(m_renderer);
+
+                // ---- Create physics world ---
+                m_physics = new AABBPhysics();
+                m_physics->setWorld(m_bsp);
+                // Cast to AABBPhysics for entity storage (not in interface)
+                static_cast<AABBPhysics*>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
+                m_playerCtrl->setPhysicsWorld(m_physics);
 
                 // ---- Spawn BSP entities (engine-side, always runs) ----
                 {
@@ -443,75 +462,15 @@ void main()
                 if (IGameModule* game = m_gameDLL.get())
                     game->loadMap(m_bsp);
 
-                Vec3 spawn = m_bsp->getSpawnOrigin();
+            Vec3 spawn = m_bsp->getSpawnOrigin();
+            // Skip floor trace - use spawn origin directly
+            Vec3 safeSpawn = spawn;
+            fprintf(stdout, "Engine: using spawn at (%.1f, %.1f, %.1f)\n",
+                    safeSpawn.x, safeSpawn.y, safeSpawn.z);
 
-                // ---- Physics setup ----
-                // Game DLL provides player bounds via getPlayerBounds() (not implemented yet)
-                // For now, use default player size
-                const Vec3 playerMins = {-16.f, -36.f, -16.f};
-                const Vec3 playerMaxs = {16.f, 36.f, 16.f};
-
-                m_physics = new AABBPhysics();
-                m_physics->setWorld(m_bsp);
-                static_cast<AABBPhysics *>(m_physics)->setPlayerBounds(playerMins, playerMaxs);
-
-                // Wire physics into game DLL now that it's constructed.
-                if (IGameModule* game = m_gameDLL.get())
-                    game->setPhysicsWorld(m_physics);
-
-                // Step 4: storage must be valid before ANY trace or setOrigin call
-                static_cast<AABBPhysics *>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
-
-                // Step 5: wire physics into PlayerController
-                EntityHandle camEntity = EntityHandle::make(0, 1);
-                m_playerCtrl->setPhysicsWorld(m_physics);
-                m_playerCtrl->setEntity(camEntity);
-
-                // Step 6: sweep player hull down from well above spawn to land on floor
-                Vec3 traceStart = spawn;
-                traceStart.y += 256.f;
-                Vec3 traceEnd = spawn;
-                traceEnd.y -= 4096.f;
-
-                TraceResult spawnTr = m_physics->trace(traceStart, traceEnd, playerMins, playerMaxs);
-
-                Vec3 safeSpawn;
-                if (spawnTr.fraction < 1.0f && spawnTr.normal.y > 0.5f)
-                {
-                    safeSpawn = spawnTr.endPos;
-                    safeSpawn.y += 1.0f;
-                    fprintf(stdout, "Engine: spawn floor found at Y=%.1f (trace fraction=%.3f)\n",
-                            safeSpawn.y, spawnTr.fraction);
-                }
-                else
-                {
-                    log.warn("Engine: spawn ground trace found no floor — using fallback height");
-                    safeSpawn = spawn;
-                    safeSpawn.y += 64.f;
-                }
-
-                // FIX 6: Solid-escape nudge.
-                {
-                    AABBPhysics *aabb = static_cast<AABBPhysics *>(m_physics);
-                    constexpr int kMaxNudgeSteps = 64;
-                    constexpr float kNudgeStep = 8.0f;
-                    for (int nudge = 0; nudge < kMaxNudgeSteps; ++nudge)
-                    {
-                        if (!aabb->testSolid(safeSpawn, playerMins, playerMaxs))
-                            break;
-                        safeSpawn.y += kNudgeStep;
-                    }
-                    if (aabb->testSolid(safeSpawn, playerMins, playerMaxs))
-                        log.warn("Engine: could not escape solid at spawn — player may be stuck");
-                    else
-                        fprintf(stdout, "Engine: final safe spawn Y=%.1f\n", safeSpawn.y);
-                }
-
-                // Step 7: atomically set storage, physics origin, and camera position.
+            // Step 7: set camera position
                 m_cameraPosition = safeSpawn;
                 m_cameraVelocity = {0.f, 0.f, 0.f};
-                m_physics->setOrigin(camEntity, safeSpawn);
-                m_physics->setVelocity(camEntity, {0.f, 0.f, 0.f});
                 m_camera->setPosition(safeSpawn);
                 m_playerCtrl->setPosition(safeSpawn);
 
@@ -532,6 +491,9 @@ void main()
                     p->mins     = playerMins;
                     p->maxs     = playerMaxs;
                     p->state    = STATE_ALIVE;
+
+                    // NOW set entity after it's created
+                    m_playerCtrl->setEntity(m_playerEntity);
 
                     // Notify game DLL about player spawn
                     if (IGameModule* game = m_gameDLL.get())
@@ -864,12 +826,30 @@ int main(int argc, char *argv[])
 {
     const char *bspPath = (argc > 1) ? argv[1] : "";
     const char *gameDir = "";
+    const char *compileMap = nullptr;
+    
     for (int i = 1; i < argc; ++i)
     {
         if (strcmp(argv[i], "-gameDir") == 0 && i + 1 < argc)
             gameDir = argv[i + 1];
+        else if (strcmp(argv[i], "-compile") == 0 && i + 1 < argc)
+            compileMap = argv[i + 1];
     }
-
+    
+    // Debug: print args
+    printf("NovaEngine: argc=%d\n", argc);
+    for (int i = 0; i < argc; ++i)
+        printf("NovaEngine: argv[%d]='%s'\n", i, argv[i]);
+    printf("NovaEngine: bspPath='%s'\n", bspPath);
+    
+    if (compileMap)
+    {
+        printf("NovaEngine: Compiling map '%s'...\n", compileMap);
+        // TODO: call qbsp/vis/light here
+        printf("NovaEngine: Map compilation not yet implemented.\n");
+        return 0;
+    }
+    
     nova::Engine engine;
     if (!engine.init(bspPath, gameDir))
         return 1;

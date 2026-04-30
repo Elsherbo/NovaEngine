@@ -1,0 +1,22 @@
+---- vis / ericw-tools 2.0.0-alpha10 ----
+
+--- Options Summary ---
+
+LoadBSPFile: 'test.bsp'
+BSP is version Quake II BSP IBSP:38
+using gamedir: 'D:\coding\cpp\novaEngine\assets'
+WARNING: failed to find basedir 'D:\coding\cpp\novaEngine\baseq2'
+Loading extended texinfo flags from test.texinfo.json...
+     4 clusters
+     4 portals
+Calculating Base Vis:
+Calculating Full Vis:
+Expanding clusters...
+average clusters visible: 3
+c_noclip: 0
+c_chains: 12
+visdatasize:4  compressed from 4
+Writing test.bsp as Quake II BSP IBSP:38
+0.00s elapsed
+
+

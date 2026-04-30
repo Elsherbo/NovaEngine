@@ -1023,6 +1023,21 @@ void BSPMap::uploadLightmapAtlas(IRenderBackend *backend)
 
     m_lmAtlasHandle  = backend->createTexture(td);
     m_lmAtlasSampler = backend->createSampler(td);
+
+    // White fallback texture for surfaces without textures
+    uint8_t whitePx[3] = {255, 255, 255};
+    TextureDesc wt{};
+    wt.type = TextureType::Texture2D;
+    wt.width = wt.height = 1;
+    wt.format = TextureFormat::RGB8;
+    wt.minFilter = TextureFilter::Nearest;
+    wt.magFilter = TextureFilter::Nearest;
+    wt.wrapU = TextureWrap::Repeat;
+    wt.wrapV = TextureWrap::Repeat;
+    wt.mipLevels = 1;
+    wt.initialData = whitePx;
+    m_whiteFallback = backend->createTexture(wt);
+    m_whiteFallbackSampler = backend->createSampler(wt);
 }
 
 // ---------------------------------------------------------------------------
@@ -1252,9 +1267,13 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
             for (const char* ext : exts)
             {
                 const std::string p = std::string("textures/") + key + ext;
+                printf("BSPLoader: trying texture '%s' (m_assets=%p)\n", p.c_str(), (void*)m_assets);
                 if ((std::strcmp(ext, ".wal") == 0 && tryLoadWal(p, tex, w, h)) ||
                     (std::strcmp(ext, ".wal") != 0 && tryLoadImage(p, tex, w, h)))
+                {
+                    printf("BSPLoader: loaded '%s'\n", p.c_str());
                     break;
+                }
             }
         }
 
@@ -1263,6 +1282,8 @@ void BSPMap::uploadToGPU(IRenderBackend *backend)
             auto c = hashColor(texName);
             tex = makeSolidTexture(c[0], c[1], c[2]);
             w = h = 128;
+            fprintf(stdout, "BSPLoader: solid color fallback for '%s': (%d,%d,%d)\n", 
+                texName, c[0], c[1], c[2]);
         }
 
         texCache[key] = tex;
@@ -1449,6 +1470,12 @@ void BSPMap::releaseGPU(IRenderBackend *backend)
     m_lmAtlasHandle = INVALID_TEXTURE;
     m_lmAtlasSampler = INVALID_SAMPLER;
 
+    // Destroy white fallback texture.
+    if (m_whiteFallback != INVALID_TEXTURE) backend->destroyTexture(m_whiteFallback);
+    if (m_whiteFallbackSampler != INVALID_SAMPLER) backend->destroySampler(m_whiteFallbackSampler);
+    m_whiteFallback = INVALID_TEXTURE;
+    m_whiteFallbackSampler = INVALID_SAMPLER;
+
     // Destroy unique diffuse textures/samplers.
     std::unordered_set<uint64_t> texSeen;
     std::unordered_set<uint64_t> sampSeen;
@@ -1470,6 +1497,8 @@ void BSPMap::render(IRenderBackend *backend, const Vec3& cameraPos)
 {
     if (m_chunks.empty())
         return;
+
+    // Debug removed
 
     // ---- Step 1: Determine camera cluster and decompress PVS ----
     const int camLeaf    = findLeaf(cameraPos);
@@ -1524,7 +1553,13 @@ void BSPMap::render(IRenderBackend *backend, const Vec3& cameraPos)
             }
 
             if (b.tex != INVALID_TEXTURE)
+            {
                 backend->bindTexture(b.tex, b.samp, 1);
+            }
+            else
+            {
+                backend->bindTexture(m_whiteFallback, m_whiteFallbackSampler, 1);
+            }
             backend->drawIndexed(b.indexCount, b.firstIndex);
         }
     }

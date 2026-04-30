@@ -428,6 +428,8 @@ namespace nova
         // Stores all face lightmaps packed into a 4096x4096 RGBA8 texture.
         TextureHandle m_lmAtlasHandle = INVALID_TEXTURE;
         SamplerHandle m_lmAtlasSampler = INVALID_SAMPLER;
+        TextureHandle m_whiteFallback = INVALID_TEXTURE;
+        SamplerHandle m_whiteFallbackSampler = INVALID_SAMPLER;
 
         static constexpr int kAtlasSize = 4096;
 

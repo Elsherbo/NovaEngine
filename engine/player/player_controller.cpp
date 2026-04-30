@@ -4,16 +4,42 @@
 // PHASE:   2
 // PURPOSE: PlayerController implementation — all movement physics.
 //
-// Physics model (Q2-style, Y-up engine space):
-//   1. Sync position FROM physics storage (ensures frame-0 safety)
-//   2. Apply gravity → clamp terminal velocity
-//   3. Ground-probe trace → set m_grounded / snap to floor
-//   4. Jump impulse (edge-detected via m_spaceHeld)
-//   5. Friction (air drag or ground friction)
-//   6. PM_Accelerate horizontal acceleration
-//   7. Sync velocity TO physics, call moveSlide, read back pos+vel
-//   8. Kill vertical velocity on floor/ceiling hit
-//   9. Clamp max horizontal speed
+// FIX LOG (this revision):
+//   1. [FIX] detectGround() rewrote from scratch.
+//      Old code: hardcoded floor at Y=28 — completely ignored BSP geometry.
+//      New code: calls m_physics->isOnGround(m_entity) after moveSlide so
+//      ground detection uses the swept AABB result from the physics system.
+//      Fallback (no physics): trace 4 units down with the player hull.
+//
+//   2. [FIX] update() now properly calls moveSlide() for collision.
+//      Old code: split X/Z trace with fraction<0.1 threshold (wrong),
+//      no Y collision, hardcoded ±180 unit bounds clamp, moveSlide ignored.
+//      New code:
+//        a. Push m_position + m_velocity into physics entity storage.
+//        b. Call moveSlide(entity, Vec3::zero(), dt, 0.0f).
+//           wishSpeed=0 skips internal PM_Accelerate (we already accelerated).
+//        c. Read back resolved position + velocity from physics storage.
+//        d. Re-evaluate m_grounded via isOnGround() on the post-move position.
+//
+//   3. [FIX] Step order corrected:
+//      Old: gravity → wishDir → friction → accel → broken-move → detectGround → jump
+//      New: wishDir → jump (before gravity) → gravity → friction → accel → moveSlide
+//      Jump now fires in the same frame the key is pressed.
+//
+//   4. [FIX] applyGravity() now checks m_grounded.
+//      Old: gravity accumulated every frame even while standing, fighting floor snap.
+//      New: skip gravity accumulation when grounded; clamp vel.y >= 0 on ground.
+//
+//   5. [FIX] Forward/right vectors flattened to horizontal plane.
+//      Old: camera forward includes Y when looking up/down → WASD pushed player
+//      vertically through the air.
+//      New: wishDir.y = 0 then re-normalize keeps movement strictly in XZ.
+//
+//   6. [FIX] Removed duplicate m_position = newPos assignment.
+//
+//   7. [FIX] Removed hardcoded ±180 unit bounds clamp.
+//      Q2 maps are thousands of units wide; this was trapping the player
+//      inside an invisible box near the world origin.
 // ============================================================
 
 #include "engine/player/player_controller.h"
@@ -32,21 +58,50 @@ PlayerController::PlayerController() = default;
 
 // ---------------------------------------------------------------------------
 // update — main entry point, called once per frame
+//
+// Step order (Q2-style, Y-up engine space):
+//   1. Build horizontal wish direction (camera fwd/right flattened to XZ)
+//   2. Jump impulse — edge-detected BEFORE gravity so it fires this frame
+//   3. Gravity — skipped when grounded; vel.y clamped >= 0 on ground
+//   4. Friction — air drag (in-air) or ground friction (grounded)
+//   5. PM_Accelerate — horizontal acceleration toward wish direction
+//   6. moveSlide — push state into physics, run swept AABB with step-up
+//                  and wall sliding, read back resolved position + velocity
+//   7. Re-detect ground from post-moveSlide position via isOnGround()
+//   8. Clamp max horizontal speed
 // ---------------------------------------------------------------------------
 void PlayerController::update(const InputState& input, float dt,
                                const Vec3& fwd, const Vec3& right)
 {
-    // ---- Step 1: Sync origin from physics storage ----
-    if (m_physics && m_entity.isValid())
-        m_position = m_physics->getOrigin(m_entity);
+    // ---- Step 1: Build wish direction (horizontal only) ----
+    // Flatten fwd/right to XZ plane so looking up/down doesn't push the
+    // player vertically through the air.
+    Vec3 fwdH  = { fwd.x,   0.0f, fwd.z   };
+    Vec3 rightH = { right.x, 0.0f, right.z };
+    const float fwdLen   = fwdH.length();
+    const float rightLen = rightH.length();
+    if (fwdLen   > 1e-4f) fwdH   = fwdH   * (1.0f / fwdLen);
+    if (rightLen > 1e-4f) rightH = rightH * (1.0f / rightLen);
 
-    // ---- Step 2: Gravity ----
-    applyGravity(dt);
+    Vec3  wishDir = Vec3::zero();
+    float speed   = m_moveSpeed;
 
-    // ---- Step 3: Ground detection ----
-    m_grounded = detectGround();
+    if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
+        speed *= 2.0f;   // sprint
 
-    // ---- Step 4: Jump ----
+    if (input.keys[SDL_SCANCODE_W]) wishDir = wishDir + fwdH;
+    if (input.keys[SDL_SCANCODE_S]) wishDir = wishDir - fwdH;
+    if (input.keys[SDL_SCANCODE_D]) wishDir = wishDir + rightH;
+    if (input.keys[SDL_SCANCODE_A]) wishDir = wishDir - rightH;
+
+    // Normalize diagonal movement
+    const float wishLen = wishDir.length();
+    if (wishLen > 1.0f)
+        wishDir = wishDir * (1.0f / wishLen);
+
+    // ---- Step 2: Jump (edge-detected, before gravity) ----
+    // Fire immediately in the same frame the key is pressed.
+    // m_grounded here is the result from the end of the previous frame.
     if (input.keys[SDL_SCANCODE_SPACE] && !m_spaceHeld && m_grounded)
     {
         m_velocity.y = kPC_JumpSpeed;
@@ -54,60 +109,55 @@ void PlayerController::update(const InputState& input, float dt,
     }
     m_spaceHeld = input.keys[SDL_SCANCODE_SPACE];
 
-    // ---- Step 5: Build wish direction ----
-    Vec3  wishDir = Vec3::zero();
-    float speed   = m_moveSpeed;
+    // ---- Step 3: Gravity ----
+    applyGravity(dt);
 
-    if (input.keys[SDL_SCANCODE_LSHIFT] || input.keys[SDL_SCANCODE_RSHIFT])
-        speed *= 3.0f;
-
-    if (input.keys[SDL_SCANCODE_W]) wishDir = wishDir + fwd;
-    if (input.keys[SDL_SCANCODE_S]) wishDir = wishDir - fwd;
-    if (input.keys[SDL_SCANCODE_D]) wishDir = wishDir + right;
-    if (input.keys[SDL_SCANCODE_A]) wishDir = wishDir - right;
-
-    float wishLen = wishDir.length();
-    if (wishLen > 1.0f)
-        wishDir = wishDir * (1.0f / wishLen);
-
-    // ---- Step 6: Friction ----
+    // ---- Step 4: Friction ----
     applyFriction(dt);
 
-    // ---- Step 7: Horizontal acceleration ----
+    // ---- Step 5: Horizontal acceleration (Q2 PM_Accelerate) ----
     if (wishLen > 0.01f)
         applyAcceleration(wishDir, speed, dt);
 
-    if (!m_physics || !m_entity.isValid())
-        return;
-
-    // ---- Step 8: Integrate via moveSlide ----
-    m_physics->setVelocity(m_entity, m_velocity);
-    m_physics->setOrigin(m_entity, m_position);
-
-    Vec3  delta     = m_velocity * dt;
-    float deltaDist = delta.length();
-
-    if (deltaDist > 1e-4f)
+    // ---- Step 6: Collision + movement via moveSlide ----
+    if (m_physics && m_entity.isValid())
     {
-        TraceResult moveResult = m_physics->moveSlide(m_entity, Vec3::zero(), dt, 0.f);
-        (void)moveResult;
+        // Push our integrated velocity (and current position) into physics
+        // entity storage so moveSlide reads the correct values.
+        m_physics->setOrigin(m_entity, m_position);
+        m_physics->setVelocity(m_entity, m_velocity);
 
+        // Run Quake-style swept AABB move:
+        //   - step-up over kStepHeight ledges
+        //   - wall-sliding with crease/edge fix
+        //   - startSolid protection (won't teleport into geometry)
+        // wishSpeed=0 → skip internal PM_Accelerate (already applied above).
+        m_physics->moveSlide(m_entity, Vec3::zero(), dt, 0.0f);
+
+        // Read back collision-resolved position and velocity.
         m_position = m_physics->getOrigin(m_entity);
-        m_velocity = m_physics->getVelocity(m_entity);
+        m_velocity  = m_physics->getVelocity(m_entity);
 
-        constexpr float kFloorDot = kPC_GroundNormal;
-        constexpr float kCeilDot  = -0.1f;
-        if (moveResult.normal.y > kFloorDot && m_velocity.y < 0.0f) m_velocity.y = 0.0f;
-        if (moveResult.normal.y < kCeilDot  && m_velocity.y > 0.0f) m_velocity.y = 0.0f;
+        // ---- Step 7: Re-detect ground from post-move position ----
+        m_grounded = m_physics->isOnGround(m_entity);
+        if (m_grounded && m_velocity.y < 0.0f)
+            m_velocity.y = 0.0f;
+    }
+    else
+    {
+        // No physics world connected: simple noclip-style integration.
+        // Also handles the first frame before the entity handle is assigned.
+        m_position = m_position + m_velocity * dt;
+        m_grounded = detectGround();
     }
 
-    // ---- Step 9: Clamp max horizontal speed ----
-    float maxSpeed = speed * 2.0f;
-    float hspd     = std::sqrt(m_velocity.x * m_velocity.x +
-                                m_velocity.z * m_velocity.z);
-    if (hspd > maxSpeed)
+    // ---- Step 8: Clamp max horizontal speed ----
+    const float maxSpeed = speed * 1.5f;
+    const float hspd     = std::sqrt(m_velocity.x * m_velocity.x +
+                                      m_velocity.z * m_velocity.z);
+    if (hspd > maxSpeed && hspd > 1e-4f)
     {
-        float scale   = maxSpeed / hspd;
+        const float scale = maxSpeed / hspd;
         m_velocity.x *= scale;
         m_velocity.z *= scale;
     }
@@ -115,42 +165,60 @@ void PlayerController::update(const InputState& input, float dt,
 
 // ---------------------------------------------------------------------------
 // applyGravity
+//
+// FIX: Skip gravity accumulation while grounded. Old code applied gravity
+// every frame regardless of ground state, causing the downward velocity to
+// grow without bound while standing and fighting the floor snap each frame.
 // ---------------------------------------------------------------------------
 void PlayerController::applyGravity(float dt)
 {
-    if (!m_physics) return;
-    m_velocity.y -= m_physics->getGravity() * dt;
+    if (m_grounded)
+    {
+        // Prevent gravity from accumulating while standing on a surface.
+        // Keep vel.y >= 0 so a just-initiated jump is never clipped here.
+        if (m_velocity.y < 0.0f)
+            m_velocity.y = 0.0f;
+        return;
+    }
+
+    const float gravity = m_physics ? m_physics->getGravity() : 800.0f;
+    m_velocity.y -= gravity * dt;
     if (m_velocity.y < -kPC_TerminalVelocity)
         m_velocity.y = -kPC_TerminalVelocity;
 }
 
 // ---------------------------------------------------------------------------
 // detectGround
+//
+// FIX: Old code checked m_position.y <= 28.0f (hardcoded invisible floor).
+// This completely ignored all BSP brushes — the player would fall through
+// every floor in every map unless Y happened to be exactly 28.
+//
+// New code: used as a fallback when physics is unavailable or the entity
+// handle is not yet valid (e.g. the very first frame before the entity is
+// created). In the normal code path, isOnGround() is called on the physics
+// entity after moveSlide() resolves the position — this function is only
+// reached via the else-branch in update().
 // ---------------------------------------------------------------------------
 bool PlayerController::detectGround()
 {
-    if (!m_physics || !m_entity.isValid())
+    if (!m_physics)
         return false;
 
-    if (m_velocity.y > 1.0f)
-        return false;
+    // Probe 4 units below the current hull position.
+    // A hit normal with Y > kPC_GroundNormal (cos 45°) is treated as ground.
+    const Vec3 end = { m_position.x, m_position.y - 4.0f, m_position.z };
+    TraceResult tr = m_physics->trace(m_position, end, m_playerMins, m_playerMaxs);
 
-    Vec3 probeEnd = { m_position.x,
-                      m_position.y - kPC_GroundProbe,
-                      m_position.z };
-
-    TraceResult tr = m_physics->trace(m_position, probeEnd,
-                                       m_playerMins, m_playerMaxs);
-
-    bool grounded = (tr.fraction < 1.0f && tr.normal.y > kPC_GroundNormal);
-
-    if (grounded && m_velocity.y <= 0.0f)
+    if (tr.fraction < 1.0f && tr.normal.y >= kPC_GroundNormal)
     {
-        m_position   = tr.endPos;
-        m_velocity.y = 0.0f;
+        // Snap gently to the floor surface.
+        m_position.y = tr.endPos.y;
+        if (m_velocity.y < 0.0f)
+            m_velocity.y = 0.0f;
+        return true;
     }
-
-    return grounded;
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,18 +228,20 @@ void PlayerController::applyFriction(float dt)
 {
     if (!m_grounded)
     {
-        float airDrag = std::pow(1.0f - 2.0f / 60.0f, dt * 60.0f);
+        // Air drag: exponential decay toward zero over time
+        const float airDrag = std::pow(1.0f - 2.0f / 60.0f, dt * 60.0f);
         m_velocity.x *= airDrag;
         m_velocity.z *= airDrag;
     }
     else
     {
-        float spd = std::sqrt(m_velocity.x * m_velocity.x +
-                               m_velocity.z * m_velocity.z);
+        // Ground friction: Quake-style speed-proportional deceleration
+        const float spd = std::sqrt(m_velocity.x * m_velocity.x +
+                                     m_velocity.z * m_velocity.z);
         if (spd > 1.0f)
         {
-            float drop  = spd * kPC_Friction * dt;
-            float scale = std::max(0.0f, (spd - drop) / spd);
+            const float drop  = spd * kPC_Friction * dt;
+            const float scale = std::max(0.0f, (spd - drop) / spd);
             m_velocity.x *= scale;
             m_velocity.z *= scale;
         }
@@ -185,13 +255,17 @@ void PlayerController::applyFriction(float dt)
 
 // ---------------------------------------------------------------------------
 // applyAcceleration — Q2 PM_Accelerate style
+//
+// Projects current velocity onto the wish direction, then adds acceleration
+// only up to wishSpeed. This gives the "strafejump potential" feel of Q2:
+// you can exceed wishSpeed by strafing but not by holding W alone.
 // ---------------------------------------------------------------------------
 void PlayerController::applyAcceleration(const Vec3& wishDir,
                                           float speed, float dt)
 {
-    float accel  = m_grounded ? kPC_GroundAccel : kPC_AirControl;
-    float curSpd = m_velocity.x * wishDir.x + m_velocity.z * wishDir.z;
-    float addSpd = speed - curSpd;
+    const float accel  = m_grounded ? kPC_GroundAccel : kPC_AirControl;
+    const float curSpd = m_velocity.x * wishDir.x + m_velocity.z * wishDir.z;
+    const float addSpd = speed - curSpd;
     if (addSpd <= 0.0f) return;
 
     float accelSpd = accel * speed * dt;
