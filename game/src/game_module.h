@@ -31,7 +31,7 @@ public:
     bool init() override;
     void shutdown() override;
     void think(float dt) override;
-    void loadMap(const BSPMap* map) override;
+    void loadMap(IWorld* world) override;
 
     void onEntitySpawn(EntityHandle handle) override;
     void onEntityDestroy(EntityHandle handle) override;

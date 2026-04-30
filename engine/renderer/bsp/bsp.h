@@ -332,6 +332,15 @@ namespace nova
         int leafBrushCount() const override { return (int)m_leafBrushes.size(); }
         const uint16_t *leafFaces() const override { return m_leafFaces.empty() ? nullptr : m_leafFaces.data(); }
 
+        // ---- PVS access (used by BSPWorld) --------------------------------
+        // Decompress the RLE-encoded PVS bitset for `cluster` into `out`.
+        // `out` is resized to (numClusters+7)/8 bytes.
+        // Bit i is set if cluster i is visible from `cluster`.
+        void decompressPVSPublic(int cluster, std::vector<uint8_t>& out) const
+        {
+            decompressPVS(cluster, out);
+        }
+
     private:
         bool loadLumps(const uint8_t *data, size_t size);
         int  findLeaf(const Vec3& pos) const;

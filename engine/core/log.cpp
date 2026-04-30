@@ -58,7 +58,11 @@ void Logger::writePrefix(LogLevel /*level*/, const char *levelStr)
 
     time_t now = time(nullptr);
     struct tm tmbuf;
+#ifdef _WIN32
     localtime_s(&tmbuf, &now);
+#else
+    localtime_r(&now, &tmbuf);
+#endif
 
     char timeBuf[32];
     strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &tmbuf);

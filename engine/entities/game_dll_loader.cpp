@@ -2,9 +2,10 @@
 // FILE:    engine/entities/game_dll_loader.cpp
 // MODULE:  Entities
 // PHASE:   2
-// STATUS:  IN_PROGRESS
+// STATUS:  FIXED
 // PURPOSE: Load game DLL at runtime.
-//          Allows modding without rebuilding engine.
+//          Windows: LoadLibrary / GetProcAddress / FreeLibrary.
+//          Linux / macOS: dlopen / dlsym / dlclose.
 // DEPENDS:  entities/igame_module.h
 // ============================================================
 
@@ -12,32 +13,47 @@
 
 #include <cstdio>
 #include <cstring>
-#include <windows.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <dlfcn.h>
+#endif
 
 namespace nova
 {
 
 // -----------------------------------------------------------------------
-// GameDLLLoader constructor
+// Thin OS shims so the rest of the file is platform-agnostic.
+// -----------------------------------------------------------------------
+#ifdef _WIN32
+    static HMODULE dll_open(const char* path)      { return LoadLibraryA(path); }
+    static void    dll_close(HMODULE h)             { FreeLibrary(h); }
+    static void*   dll_sym(HMODULE h, const char* n){ return (void*)GetProcAddress(h, n); }
+    static const char* dll_error()                  { return "LoadLibrary failed"; }
+#else
+    static void* dll_open(const char* path)         { return dlopen(path, RTLD_NOW | RTLD_LOCAL); }
+    static void  dll_close(void* h)                 { dlclose(h); }
+    static void* dll_sym(void* h, const char* n)    { return dlsym(h, n); }
+    static const char* dll_error()                  { return dlerror(); }
+#endif
+
 // -----------------------------------------------------------------------
 GameDLLLoader::GameDLLLoader()
 {
-    m_dll = nullptr;
+    m_dll    = nullptr;
     m_module = nullptr;
 }
 
-// -----------------------------------------------------------------------
-// GameDLLLoader destructor
-// -----------------------------------------------------------------------
 GameDLLLoader::~GameDLLLoader()
 {
     unload();
 }
 
 // -----------------------------------------------------------------------
-// load - open DLL and get IGameModule
+// load
 // -----------------------------------------------------------------------
-bool GameDLLLoader::load(const char *path)
+bool GameDLLLoader::load(const char* path)
 {
     if (m_dll)
     {
@@ -45,15 +61,50 @@ bool GameDLLLoader::load(const char *path)
         return false;
     }
 
-    m_dll = LoadLibraryA(path);
+    m_dll = dll_open(path);
+
+#ifndef _WIN32
+    // On Linux the caller may pass a .dll path (Windows convention).
+    // Try replacing .dll → .so and also "lib" prefix forms.
     if (!m_dll)
     {
-        fprintf(stderr, "GameDLLLoader: failed to load '%s'\n", path);
+        char altPath[512];
+        strncpy(altPath, path, sizeof(altPath) - 1);
+        altPath[sizeof(altPath) - 1] = '\0';
+        char* dot = strrchr(altPath, '.');
+        if (dot && strcmp(dot, ".dll") == 0)
+        {
+            strncpy(dot, ".so", 4);
+            m_dll = dll_open(altPath);
+        }
+    }
+    if (!m_dll)
+    {
+        // Try libname.so in the same directory
+        char libPath[520];
+        const char* slash = strrchr(path, '/');
+        const char* base  = slash ? slash + 1 : path;
+        snprintf(libPath, sizeof(libPath), "%.*slib%s",
+                 (int)(base - path), path, base);
+        char* dot = strrchr(libPath, '.');
+        if (dot) strncpy(dot, ".so", 4);
+        m_dll = dll_open(libPath);
+    }
+#endif
+
+    if (!m_dll)
+    {
+        fprintf(stderr, "GameDLLLoader: failed to load '%s' (%s)\n",
+                path, dll_error());
         return false;
     }
 
-    void *sym = (void*)GetProcAddress((HMODULE)m_dll, "GetGameModule");
-    PFN_GetGameModule getModule = (PFN_GetGameModule)sym;
+#ifdef _WIN32
+    void* sym = dll_sym(m_dll, "GetGameModule");
+#else
+    void* sym = dll_sym(m_dll, "GetGameModule");
+#endif
+    PFN_GetGameModule getModule = reinterpret_cast<PFN_GetGameModule>(sym);
 
     if (!getModule)
     {
@@ -84,7 +135,7 @@ bool GameDLLLoader::load(const char *path)
 }
 
 // -----------------------------------------------------------------------
-// unload - close DLL
+// unload
 // -----------------------------------------------------------------------
 void GameDLLLoader::unload()
 {
@@ -93,28 +144,15 @@ void GameDLLLoader::unload()
         m_module->shutdown();
         m_module = nullptr;
     }
-
     if (m_dll)
     {
-        FreeLibrary((HMODULE)m_dll);
+        dll_close(m_dll);
         m_dll = nullptr;
     }
 }
 
 // -----------------------------------------------------------------------
-// isLoaded - check if DLL is loaded
-// -----------------------------------------------------------------------
-bool GameDLLLoader::isLoaded() const
-{
-    return m_module != nullptr;
-}
-
-// -----------------------------------------------------------------------
-// get - get the loaded module
-// -----------------------------------------------------------------------
-IGameModule *GameDLLLoader::get() const
-{
-    return m_module;
-}
+bool GameDLLLoader::isLoaded() const { return m_module != nullptr; }
+IGameModule* GameDLLLoader::get()  const { return m_module; }
 
 } // namespace nova

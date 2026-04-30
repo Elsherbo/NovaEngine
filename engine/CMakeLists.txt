@@ -31,6 +31,10 @@ target_link_libraries(nova_engine PUBLIC nova_entities)
 add_subdirectory(player)
 target_link_libraries(nova_engine PUBLIC nova_player)
 
+# World abstraction (IWorld + BSPWorld — hides BSP from game DLL)
+add_subdirectory(world)
+target_link_libraries(nova_engine PUBLIC nova_world)
+
 # Audio
 # add_subdirectory(audio)
 # target_link_libraries(nova_engine PUBLIC nova_audio)

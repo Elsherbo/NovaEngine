@@ -9,10 +9,10 @@
 // ============================================================
 #pragma once
 
+#include "engine/world/iworld.h"
+
 namespace nova
 {
-
-struct BSPMap;   // forward — avoids including bsp.h here
 
 // -----------------------------------------------------------------------
 // ParsedEntity — temporary storage for one entity's key-value pairs
@@ -44,10 +44,10 @@ struct ParsedEntity
 // -----------------------------------------------------------------------
 struct MapLoader
 {
-    /// Parse the entity lump from `map` and spawn all entities via
+    /// Parse the entity lump from `world` and spawn all entities via
     /// EntityFactory. EntityFactory::init() must have been called first.
     /// Returns the number of entities spawned.
-    static int load(const BSPMap* map);
+    static int load(IWorld* world);
 
 private:
     /// Parse one `{ ... }` block and fill `out`. Returns the pointer

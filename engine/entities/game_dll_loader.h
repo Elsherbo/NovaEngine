@@ -36,6 +36,8 @@ public:
 private:
     #ifdef _WIN32
         HMODULE m_dll = nullptr;
+    #else
+        void* m_dll = nullptr;
     #endif
 
     IGameModule *m_module = nullptr;

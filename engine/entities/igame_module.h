@@ -12,6 +12,7 @@
 
 #include "engine/core/math/vec.h"
 #include "engine/entities/entity_id.h"
+#include "engine/world/iworld.h"
 
 namespace nova
 {
@@ -23,7 +24,7 @@ class IPhysicsWorld;
 class IAudioSystem;
 class INetworkSystem;
 struct IPlatform;
-class BSPMap;   // NEW: forward so IGameModule::loadMap can accept BSPMap*
+class IWorld;   // world abstraction — game DLL never needs BSPMap directly
 
 // -----------------------------------------------------------------------
 // IGameModule - pure virtual interface
@@ -38,10 +39,11 @@ public:
     virtual bool init() = 0;
     virtual void shutdown() = 0;
 
-    // ---- Map loading (NEW) ----
-    // Called by the engine after BSP::load() succeeds.
-    // Implementations call EntityFactory::init() then MapLoader::load(map).
-    virtual void loadMap(const BSPMap* map) = 0;
+    // ---- Map loading ----
+    // Called by the engine after the world is ready.
+    // The game DLL stores the IWorld* for spatial queries (traces, PVS).
+    // It must NOT downcast to BSPMap* — use only the IWorld interface.
+    virtual void loadMap(IWorld* world) = 0;
 
     // ---- Per-frame updates ----
     virtual void think(float dt) = 0;

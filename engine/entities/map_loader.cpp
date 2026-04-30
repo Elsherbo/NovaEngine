@@ -13,7 +13,7 @@
 #include "engine/entities/entity_factory.h"
 #include "engine/entities/entity_list.h"
 #include "engine/entities/property_store.h"
-#include "engine/renderer/bsp/bsp.h"
+#include "engine/world/iworld.h"
 
 #include <cstring>   // strncpy, strcmp, strlen, strncmp
 #include <cstdio>    // fprintf, sscanf
@@ -207,22 +207,11 @@ void MapLoader::linkTargets()
 // load
 // ============================================================
 
-int MapLoader::load(const BSPMap* map)
+int MapLoader::load(IWorld* world)
 {
-    if (!map) return 0;
+    if (!world) return 0;
 
-    // BSPMap::m_entities is private; Q2's entity lump is exposed via
-    // getSpawnOrigin/getSpawnAngles in bsp.h, but the raw string is not.
-    // The spec says to access it via BSPMap::entityString (char*).
-    // Since m_entities is std::string and private, we need an accessor.
-    //
-    // OPTION A: Add a public accessor to BSPMap (preferred, type-safe).
-    // OPTION B: Cast — fragile, layout-dependent, never do this.
-    //
-    // We implement Option A: `const char* getEntityString() const`.
-    // See the companion modification note at the bottom of this file.
-    // For now we call the accessor declared there:
-    const char* lump = map->getEntityString();
+    const char* lump = world->getEntityString();
     if (!lump || !*lump) return 0;
 
     int spawned = 0;

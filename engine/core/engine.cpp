@@ -66,6 +66,8 @@
 #include "engine/entities/igame_module.h"
 #include "engine/entities/map_loader.h"
 #include "engine/entities/game_dll_loader.h"
+#include "engine/world/iworld.h"
+#include "engine/world/bsp_world.h"
 #include "engine/core/asset_fs.h"
 #include "vendor/GLAD/include/glad/glad.h"
 
@@ -209,6 +211,7 @@ void main()
         Camera *m_camera = nullptr;
         PlayerController *m_playerCtrl = nullptr;   // owns all movement physics
         BSPMap *m_bsp = nullptr;
+        BSPWorld *m_bspWorld = nullptr;   // IWorld facade over m_bsp
         IPhysicsWorld *m_physics = nullptr;
         AssetFS m_assets;
 
@@ -444,9 +447,15 @@ void main()
             {
                 m_bsp->uploadToGPU(m_renderer);
 
+                // ---- Create IWorld facade ----
+                // BSPWorld wraps BSPMap behind the IWorld interface.
+                // From this point on, all callers (physics, game DLL, MapLoader)
+                // receive IWorld* — not BSPMap*.
+                m_bspWorld = new BSPWorld(m_bsp);
+
                 // ---- Create physics world ---
                 m_physics = new AABBPhysics();
-                m_physics->setWorld(m_bsp);
+                m_physics->setWorld(m_bspWorld->collisionWorld());
                 // Cast to AABBPhysics for entity storage (not in interface)
                 static_cast<AABBPhysics*>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
                 static_cast<AABBPhysics*>(m_physics)->setPlayerBounds(
@@ -458,15 +467,15 @@ void main()
                 // ---- Spawn BSP entities (engine-side, always runs) ----
                 {
                     MapLoader mapLoader;
-                    int spawned = mapLoader.load(m_bsp);
+                    int spawned = mapLoader.load(m_bspWorld);
                     fprintf(stdout, "Engine: MapLoader spawned %d entities from BSP lump\n", spawned);
                 }
 
                 // ---- Notify game module (if DLL is loaded) ----
                 if (IGameModule* game = m_gameDLL.get())
-                    game->loadMap(m_bsp);
+                    game->loadMap(m_bspWorld);
 
-                Vec3 spawn = m_bsp->getSpawnOrigin();
+                Vec3 spawn = m_bspWorld->getSpawnOrigin();
                 // Skip floor trace - use spawn origin directly
                 
                 Vec3 safeSpawn = spawn;
@@ -501,8 +510,8 @@ void main()
                 m_camera->setPosition(safeSpawn);
                 m_playerCtrl->setPosition(safeSpawn);
 
-                if (m_bsp->getSpawnAngles().y != 0.f)
-                    m_camera->setYaw(m_bsp->getSpawnAngles().y);
+                if (m_bspWorld->getSpawnAngles().y != 0.f)
+                    m_camera->setYaw(m_bspWorld->getSpawnAngles().y);
 
                 fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
                         safeSpawn.x, safeSpawn.y, safeSpawn.z);
@@ -601,6 +610,8 @@ void main()
         {
             if (m_renderer)
                 m_bsp->releaseGPU(m_renderer);
+            delete m_bspWorld;
+            m_bspWorld = nullptr;
             delete m_bsp;
             m_bsp = nullptr;
         }
@@ -744,33 +755,13 @@ void main()
         // F3: print PVS stats
         static bool prevF3 = false;
         const bool f3Down = input.keys[SDL_SCANCODE_F3];
-        if (f3Down && !prevF3 && m_bsp)
+        if (f3Down && !prevF3 && m_bspWorld)
         {
             Vec3 pos = m_camera->getPosition();
-            const int nodeCount  = m_bsp->nodeCount();
-            const int leafCount  = m_bsp->leafCount();
-            const int planeCount = m_bsp->planeCount();
-            (void)nodeCount; (void)planeCount;
-
-            int camLeaf = -1;
-            {
-                int ni = 0;
-                while (ni >= 0)
-                {
-                    const nova::BSPNode* nd = m_bsp->nodes() + ni;
-                    const nova::BSPPlane* pl = m_bsp->planes() + nd->plane;
-                    float d = pos.x*pl->normal.x + pos.y*pl->normal.y + pos.z*pl->normal.z - pl->dist;
-                    ni = nd->children[d < 0.f ? 1 : 0];
-                }
-                int li = ~ni;
-                if (li >= 0 && li < leafCount) camLeaf = li;
-            }
-
-            int camCluster = -1;
-            if (camLeaf >= 0)
-                camCluster = (int)m_bsp->leaves()[camLeaf].cluster;
-
-            fprintf(stdout, "PVS: camLeaf=%d cluster=%d\n", camLeaf, camCluster);
+            int camCluster = m_bspWorld->clusterForPoint(pos);
+            fprintf(stdout, "PVS: cluster=%d  visible from self=%s\n",
+                camCluster,
+                m_bspWorld->isClusterVisible(camCluster, camCluster) ? "yes" : "no");
         }
         prevF3 = f3Down;
 
