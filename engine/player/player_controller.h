@@ -51,24 +51,30 @@ class  IPhysicsWorld;
 //               1 = Q2-like (partial air steering)
 //               3 = Quake 1-like (strong air steering)
 // ---------------------------------------------------------------------------
-static constexpr float kPC_JumpSpeed   = 270.0f;
-static constexpr float kPC_AirControl  = 1.0f;
-static constexpr float kPC_Friction    = 3.0f;
-    static constexpr float kPC_GroundAccel = 15.0f;
+static constexpr float kPC_JumpSpeed        = 270.0f;
+static constexpr float kPC_MoveSpeed        = 250.0f;
+static constexpr float kPC_GroundAccel      = 10.0f;
+static constexpr float kPC_AirAccel         = 0.0f;
+static constexpr float kPC_Friction         = 6.0f;
+static constexpr float kPC_StopSpeed        = 100.0f;
+static constexpr float kPC_MaxSpeed         = 320.0f;
 
 // Player AABB half-extents in Y-up engine space.
 // These match what the BSP loader expects for Q2-scale maps
 // (Q2 player hull: ±16 on X/Z, -28 to +28 on Y after q2ToGL).
-static constexpr float kPC_HullHalfX  = 16.0f;
-static constexpr float kPC_HullHalfY  = 28.0f;
-static constexpr float kPC_HullHalfZ  = 16.0f;
+static constexpr float kPC_HullHalfX        = 16.0f;
+static constexpr float kPC_HullHalfY        = 28.0f;
+static constexpr float kPC_HullHalfZ        = 16.0f;
 
 // Distance below origin to probe for the ground.
 static constexpr float kPC_GroundProbe = 170.0f;
 
+// Eye height above origin (Q2: 22 units).
+static constexpr float kPC_EyeHeight        = 22.0f;
+
 // Minimum Y-component of a hit normal considered "ground".
 // cos(45°) = 0.707: anything steeper is treated as a wall.
-static constexpr float kPC_GroundNormal = 0.7f;
+static constexpr float kPC_GroundNormal     = 0.7f;
 
 // Maximum downward speed (units/s) — prevents tunnelling through thin geometry.
 static constexpr float kPC_TerminalVelocity = 1800.0f;
@@ -93,7 +99,7 @@ public:
                 const Vec3& fwd, const Vec3& right);
 
     // ---- Queries ----
-    Vec3 getEyePosition() const { return m_position; }
+    Vec3 getEyePosition() const { return { m_position.x, m_position.y + kPC_EyeHeight, m_position.z }; }
     Vec3 getVelocity()    const { return m_velocity; }
     bool isOnGround()     const { return m_grounded; }
 
@@ -119,7 +125,7 @@ private:
     bool  m_spaceHeld = false;   // edge-detect: prevent hold-to-fly jump
 
     // ---- Settings ----
-    float m_moveSpeed = 400.0f; // units/s (Q2 maps are large)
+    float m_moveSpeed = kPC_MoveSpeed; // units/s (Q2 maps are large)
 
     Vec3 m_playerMins = { -kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ };
     Vec3 m_playerMaxs = {  kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ };

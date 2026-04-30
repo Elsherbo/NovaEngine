@@ -50,6 +50,7 @@
 #include <SDL3/SDL_scancode.h>
 #include <cmath>
 #include <algorithm>
+#include <cstdio>
 
 namespace nova
 {
@@ -73,6 +74,7 @@ PlayerController::PlayerController() = default;
 void PlayerController::update(const InputState& input, float dt,
                                const Vec3& fwd, const Vec3& right)
 {
+    // END TEMP DEBUG
     // ---- Step 1: Build wish direction (horizontal only) ----
     // Flatten fwd/right to XZ plane so looking up/down doesn't push the
     // player vertically through the air.
@@ -106,6 +108,7 @@ void PlayerController::update(const InputState& input, float dt,
     {
         m_velocity.y = kPC_JumpSpeed;
         m_grounded   = false;
+        // Q2: friction is NOT applied on the jump frame
     }
     m_spaceHeld = input.keys[SDL_SCANCODE_SPACE];
 
@@ -152,14 +155,26 @@ void PlayerController::update(const InputState& input, float dt,
     }
 
     // ---- Step 8: Clamp max horizontal speed ----
-    const float maxSpeed = speed * 1.5f;
-    const float hspd     = std::sqrt(m_velocity.x * m_velocity.x +
-                                      m_velocity.z * m_velocity.z);
-    if (hspd > maxSpeed && hspd > 1e-4f)
+    // const float maxSpeed = speed * 1.5f;
+    // const float hspd     = std::sqrt(m_velocity.x * m_velocity.x +
+    //                                   m_velocity.z * m_velocity.z);
+    // if (hspd > maxSpeed && hspd > 1e-4f)
+    // {
+    //     const float scale = maxSpeed / hspd;
+    //     m_velocity.x *= scale;
+    //     m_velocity.z *= scale;
+    // }
+    if (m_grounded)
     {
-        const float scale = maxSpeed / hspd;
-        m_velocity.x *= scale;
-        m_velocity.z *= scale;
+        // Clamp to max ground speed
+        const float hspd = std::sqrt(m_velocity.x * m_velocity.x +
+                                    m_velocity.z * m_velocity.z);
+        if (hspd > kPC_MaxSpeed)
+        {
+            const float scale = kPC_MaxSpeed / hspd;
+            m_velocity.x *= scale;
+            m_velocity.z *= scale;
+        }
     }
 }
 
@@ -176,8 +191,7 @@ void PlayerController::applyGravity(float dt)
     {
         // Prevent gravity from accumulating while standing on a surface.
         // Keep vel.y >= 0 so a just-initiated jump is never clipped here.
-        if (m_velocity.y < 0.0f)
-            m_velocity.y = 0.0f;
+        if (m_velocity.y < 0.0f) m_velocity.y = 0.0f;
         return;
     }
 
@@ -227,30 +241,25 @@ bool PlayerController::detectGround()
 void PlayerController::applyFriction(float dt)
 {
     if (!m_grounded)
+        return; // Q2 has NO air friction — velocity is preserved perfectly in air
+    
+    // Q2 ground friction: speed-dependent with stopspeed threshold
+    const float speed = std::sqrt(m_velocity.x * m_velocity.x +
+                                   m_velocity.z * m_velocity.z);
+    if (speed < 1.0f)
     {
-        // Air drag: exponential decay toward zero over time
-        const float airDrag = std::pow(1.0f - 2.0f / 60.0f, dt * 60.0f);
-        m_velocity.x *= airDrag;
-        m_velocity.z *= airDrag;
+        m_velocity.x = 0.0f;
+        m_velocity.z = 0.0f;
+        return;
     }
-    else
-    {
-        // Ground friction: Quake-style speed-proportional deceleration
-        const float spd = std::sqrt(m_velocity.x * m_velocity.x +
-                                     m_velocity.z * m_velocity.z);
-        if (spd > 1.0f)
-        {
-            const float drop  = spd * kPC_Friction * dt;
-            const float scale = std::max(0.0f, (spd - drop) / spd);
-            m_velocity.x *= scale;
-            m_velocity.z *= scale;
-        }
-        else
-        {
-            m_velocity.x = 0.0f;
-            m_velocity.z = 0.0f;
-        }
-    }
+    
+    // Q2: friction applies to max(speed, stopspeed)
+    const float control    = (speed < kPC_StopSpeed) ? kPC_StopSpeed : speed;
+    const float drop       = control * kPC_Friction * dt;
+    const float newSpeed   = std::max(0.0f, speed - drop);
+    const float scale      = newSpeed / speed;
+    m_velocity.x *= scale;
+    m_velocity.z *= scale;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,18 +269,18 @@ void PlayerController::applyFriction(float dt)
 // only up to wishSpeed. This gives the "strafejump potential" feel of Q2:
 // you can exceed wishSpeed by strafing but not by holding W alone.
 // ---------------------------------------------------------------------------
-void PlayerController::applyAcceleration(const Vec3& wishDir,
-                                          float speed, float dt)
+void PlayerController::applyAcceleration(const Vec3& wishDir, float speed, float dt)
 {
-    const float accel  = m_grounded ? kPC_GroundAccel : kPC_AirControl;
+    // Q2 PM_Accelerate
+    const float accel = m_grounded ? kPC_GroundAccel : kPC_AirAccel;
+    
     const float curSpd = m_velocity.x * wishDir.x + m_velocity.z * wishDir.z;
     const float addSpd = speed - curSpd;
     if (addSpd <= 0.0f) return;
-
+    
     float accelSpd = accel * speed * dt;
-    if (accelSpd > addSpd)
-        accelSpd = addSpd;
-
+    if (accelSpd > addSpd) accelSpd = addSpd;
+    
     m_velocity.x += wishDir.x * accelSpd;
     m_velocity.z += wishDir.z * accelSpd;
 }

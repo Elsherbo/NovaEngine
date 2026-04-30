@@ -449,6 +449,10 @@ void main()
                 m_physics->setWorld(m_bsp);
                 // Cast to AABBPhysics for entity storage (not in interface)
                 static_cast<AABBPhysics*>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
+                static_cast<AABBPhysics*>(m_physics)->setPlayerBounds(
+                    Vec3{-kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ},
+                    Vec3{ kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ}
+                );
                 m_playerCtrl->setPhysicsWorld(m_physics);
 
                 // ---- Spawn BSP entities (engine-side, always runs) ----
@@ -462,11 +466,34 @@ void main()
                 if (IGameModule* game = m_gameDLL.get())
                     game->loadMap(m_bsp);
 
-            Vec3 spawn = m_bsp->getSpawnOrigin();
-            // Skip floor trace - use spawn origin directly
-            Vec3 safeSpawn = spawn;
-            fprintf(stdout, "Engine: using spawn at (%.1f, %.1f, %.1f)\n",
-                    safeSpawn.x, safeSpawn.y, safeSpawn.z);
+                Vec3 spawn = m_bsp->getSpawnOrigin();
+                // Skip floor trace - use spawn origin directly
+                
+                Vec3 safeSpawn = spawn;
+                {
+                    const Vec3 pMins = { -kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ };
+                    const Vec3 pMaxs = {  kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ };
+                
+                    auto isSpawnSolid = [&](const Vec3& pos) -> bool {
+                        TraceResult tr = m_physics->trace(
+                            pos, {pos.x, pos.y - 1.0f, pos.z}, pMins, pMaxs);
+                        return tr.startSolid;
+                    };
+                
+                    // Nudge upward until not solid
+                    for (int i = 0; i < 128 && isSpawnSolid(safeSpawn); ++i)
+                        safeSpawn.y += 1.0f;
+                
+                    // If still solid after going up, try moving forward (-Z in GL)
+                    if (isSpawnSolid(safeSpawn)) {
+                        safeSpawn = spawn;
+                        for (int i = 0; i < 128 && isSpawnSolid(safeSpawn); ++i)
+                            safeSpawn.z -= 1.0f;
+                    }
+                
+                    fprintf(stdout, "Engine: safe spawn at (%.1f, %.1f, %.1f)\n",
+                        safeSpawn.x, safeSpawn.y, safeSpawn.z);
+                }
 
             // Step 7: set camera position
                 m_cameraPosition = safeSpawn;

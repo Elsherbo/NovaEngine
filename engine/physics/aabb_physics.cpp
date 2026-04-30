@@ -196,28 +196,30 @@ bool AABBPhysics::testSolid(const Vec3& origin,
         (maxs.y - mins.y) * 0.5f,
         (maxs.z - mins.z) * 0.5f };
 
-    for (int bi = 0; bi < m_bsp->brushCount(); ++bi)
-    {
-        const BSPBrush& brush = m_bsp->brushes()[bi];
-        if (!(brush.contents & kSolidMask)) continue;   // FIX 14
-
-        bool allInside = true;
-        for (uint32_t si = brush.firstBrushSide;
-             si < brush.firstBrushSide + brush.numBrushSides; ++si)
+        for (int bi = 0; bi < m_bsp->brushCount(); ++bi)
         {
-            if (si >= (uint32_t)m_bsp->brushSideCount()) { allInside = false; break; }
-            const BSPBrushSide& bs = m_bsp->brushSides()[si];
-            if (bs.plane >= (uint16_t)m_bsp->planeCount()) { allInside = false; break; }
-            const BSPPlane& plane = m_bsp->planes()[bs.plane];
-
-            float d = planeSignedDist(plane, center);
-            float o = planeBoxOffset(plane.normal, extents);
-            if (d > -o) { allInside = false; break; }
+            const BSPBrush& brush = m_bsp->brushes()[bi];
+            if (!(brush.contents & kSolidMask)) continue;
+    
+            bool allInside = true;
+            for (uint32_t si = brush.firstBrushSide;
+                 si < brush.firstBrushSide + brush.numBrushSides; ++si)
+            {
+                if (si >= (uint32_t)m_bsp->brushSideCount()) { allInside = false; break; }
+                const BSPBrushSide& bs = m_bsp->brushSides()[si];
+                if (bs.plane >= (uint16_t)m_bsp->planeCount()) { allInside = false; break; }
+                const BSPPlane& plane = m_bsp->planes()[bs.plane];
+    
+                float d = planeSignedDist(plane, center);
+                float o = planeBoxOffset(plane.normal, extents);
+                // FIX: use kClipEpsilon tolerance so the hull sitting exactly
+                // on a plane face is not considered "inside" the brush.
+                if (d > -o + kClipEpsilon) { allInside = false; break; }
+            }
+    
+            if (allInside) return true;
         }
-
-        if (allInside) return true;
-    }
-    return false;
+        return false;
 }
 
 // -----------------------------------------------------------------------
@@ -232,125 +234,137 @@ bool AABBPhysics::testSolid(const Vec3& origin,
 //  Previously fraction stayed at 1.0, causing pass-through.
 // -----------------------------------------------------------------------
 TraceResult AABBPhysics::traceWorld(const Vec3& start, const Vec3& dir, float dist,
-                                    const Vec3& mins, const Vec3& maxs)
+    const Vec3& mins, const Vec3& maxs)
 {
-    TraceResult r;
-    r.fraction = 1.0f;
-    r.endPos   = start + dir;
+    // At the top of traceWorld, before the brush loop:
+static bool once = false;
+if (!once) {
+    once = true;
+    fprintf(stdout, "[TW] first call: start=(%.1f,%.1f,%.1f) dir=(%.3f,%.3f,%.3f) dist=%.3f\n",
+        start.x, start.y, start.z, dir.x/dist, dir.y/dist, dir.z/dist, dist);
+}
 
-    if (!m_bsp || m_bsp->brushCount() == 0)
-    {
-        return r;
-    }
+TraceResult r;
+r.fraction = 1.0f;
+r.endPos   = start + dir;
 
-    if (dist < kMinMoveDist)
-    {
-        r.endPos = start;
-        return r;
-    }
+if (!m_bsp || m_bsp->brushCount() == 0)
+return r;
 
-    const Vec3 center {
-        start.x + (mins.x + maxs.x) * 0.5f,
-        start.y + (mins.y + maxs.y) * 0.5f,
-        start.z + (mins.z + maxs.z) * 0.5f };
-    const Vec3 extents {
-        (maxs.x - mins.x) * 0.5f,
-        (maxs.y - mins.y) * 0.5f,
-        (maxs.z - mins.z) * 0.5f };
-    const Vec3 moveDir = dir * (1.0f / dist);
+if (dist < kMinMoveDist)
+{
+r.endPos = start;
+return r;
+}
 
-    float bestT = dist;
-    Vec3  bestN = Vec3::zero();
+const Vec3 center {
+start.x + (mins.x + maxs.x) * 0.5f,
+start.y + (mins.y + maxs.y) * 0.5f,
+start.z + (mins.z + maxs.z) * 0.5f };
+const Vec3 extents {
+(maxs.x - mins.x) * 0.5f,
+(maxs.y - mins.y) * 0.5f,
+(maxs.z - mins.z) * 0.5f };
+const Vec3 moveDir = dir * (1.0f / dist);
 
-    for (int brushIdx = 0; brushIdx < m_bsp->brushCount(); ++brushIdx)
-    {
-        const BSPBrush& brush = m_bsp->brushes()[brushIdx];
-        if (!(brush.contents & kSolidMask)) continue;   // FIX 14
+float bestT = dist;
+Vec3  bestN = Vec3::zero();
+bool  anyStartSolid = false;
 
-        float enterT = 0.0f;
-        float exitT  = dist;
-        Vec3  enterN = Vec3::zero();
-        bool  startsOutside = false;
+for (int brushIdx = 0; brushIdx < m_bsp->brushCount(); ++brushIdx)
+{
+const BSPBrush& brush = m_bsp->brushes()[brushIdx];
+if (!(brush.contents & kSolidMask)) continue;
 
-        for (uint32_t si = brush.firstBrushSide;
-             si < brush.firstBrushSide + brush.numBrushSides; ++si)
-        {
-            if (si >= (uint32_t)m_bsp->brushSideCount()) break;
-            const BSPBrushSide& bs = m_bsp->brushSides()[si];
-            if (bs.plane >= (uint16_t)m_bsp->planeCount()) continue;
+float enterT = 0.0f;
+float exitT  = dist;
+Vec3  enterN = Vec3::zero();
+bool  startsOutside = false;
 
-            const BSPPlane& plane = m_bsp->planes()[bs.plane];
-            const Vec3& n = plane.normal;
+for (uint32_t si = brush.firstBrushSide;
+si < brush.firstBrushSide + brush.numBrushSides; ++si)
+{
+if (si >= (uint32_t)m_bsp->brushSideCount()) break;
+const BSPBrushSide& bs = m_bsp->brushSides()[si];
+if (bs.plane >= (uint16_t)m_bsp->planeCount()) continue;
 
-            float boxOff = std::abs(n.x*extents.x) + std::abs(n.y*extents.y) + std::abs(n.z*extents.z);
-            float d0     = n.x*center.x + n.y*center.y + n.z*center.z - plane.dist;
-            float dd     = n.x*moveDir.x + n.y*moveDir.y + n.z*moveDir.z;
+const BSPPlane& plane = m_bsp->planes()[bs.plane];
+const Vec3& n = plane.normal;
 
-            // nearD0: signed distance of the hull's near-face from the plane.
-            // Positive  → hull is outside this plane's half-space.
-            // Negative  → hull is inside this plane's half-space.
-            float nearD0 = d0 - boxOff;
+float boxOff = std::abs(n.x*extents.x)
++ std::abs(n.y*extents.y)
++ std::abs(n.z*extents.z);
+float d0 = n.x*center.x + n.y*center.y + n.z*center.z - plane.dist;
+float dd = n.x*moveDir.x + n.y*moveDir.y + n.z*moveDir.z;
 
-            if (nearD0 > 0.0f)
-                startsOutside = true;
+// Signed distance of the hull's near face from this plane.
+// Positive = hull is outside this plane (in the half-space the normal points to).
+// Use kClipEpsilon tolerance: a hull resting exactly ON a plane
+// (nearD0 == 0) must be treated as "outside" or sliding along it
+// will incorrectly mark the brush as startSolid.
+float nearD0 = d0 - boxOff;
 
-            if (std::abs(dd) < 1e-7f)
-            {
-                // Parallel to plane.
-                if (nearD0 > 0.0f) { exitT = -1.0f; break; }  // never enters
-                continue;
-            }
+if (nearD0 >= -kClipEpsilon)
+startsOutside = true;
 
-            float t = -nearD0 / dd;
-            if (dd < 0.0f)            // entering the solid half-space
-            {
-                if (t > enterT) { enterT = t; enterN = n; }
-            }
-            else                      // leaving the solid half-space
-            {
-                if (t < exitT) exitT = t;
-            }
-        }
+if (std::abs(dd) < 1e-7f)
+{
+// Parallel to plane
+if (nearD0 > kClipEpsilon)
+{
+// Hull is clearly outside this plane and moving parallel → never enters brush
+exitT = -1.0f;
+break;
+}
+continue;
+}
 
-        if (exitT < 0.0f || enterT >= exitT) continue;
+float t = -nearD0 / dd;
+if (dd < 0.0f)
+{
+// Moving toward the solid half-space (entering)
+if (t > enterT) { enterT = t; enterN = n; }
+}
+else
+{
+// Moving away from the solid half-space (exiting)
+if (t < exitT) exitT = t;
+}
+}
 
-        if (!startsOutside)
-        {
-            // FIX 11: Hull started inside this brush.
-            // Mark startSolid but do NOT register a forward hit.
-            // After the loop we will clamp fraction to 0.
-            r.startSolid = true;
-            r.allSolid   = true;   // conservatively mark allSolid too
-            continue;
-        }
+if (exitT < 0.0f || enterT >= exitT) continue;
 
-        if (enterT < bestT && enterT >= 0.0f)
-        {
-            bestT = enterT - kClipEpsilon;
-            if (bestT < 0.0f) bestT = 0.0f;
-            bestN = enterN;
-        }
-    }
+if (!startsOutside)
+{
+// Hull started inside this brush — record but don't block movement
+anyStartSolid = true;
+continue;  // keep looking for actual forward collisions
+}
 
-    // FIX 11: If we are inside solid and found no outward collision,
-    // return fraction=0 / endPos=start so the caller does NOT move the
-    // entity. The old code fell through here with fraction=1.0 and
-    // endPos=start+dir, teleporting the player through solid geometry.
-    if (r.startSolid && bestT >= dist)
-    {
-        r.fraction = 0.0f;
-        r.endPos   = start;
-        r.normal   = Vec3::zero();
-        return r;
-    }
+if (enterT < bestT && enterT >= 0.0f)
+{
+bestT = enterT - kClipEpsilon;
+if (bestT < 0.0f) bestT = 0.0f;
+bestN = enterN;
+}
+}
 
-    if (bestT < dist)
-    {
-        r.fraction = bestT / dist;
-        r.endPos   = start + moveDir * bestT;
-        r.normal   = bestN;
-    }
-    return r;
+// Only set startSolid if we found no valid forward hit at all
+if (anyStartSolid && bestT >= dist)
+{
+r.startSolid = true;
+r.endPos     = start;
+r.fraction   = 0.0f;
+return r;
+}
+
+if (bestT < dist)
+{
+r.fraction = bestT / dist;
+r.endPos   = start + moveDir * bestT;
+r.normal   = bestN;
+}
+return r;
 }
 
 // -----------------------------------------------------------------------
@@ -381,8 +395,11 @@ bool AABBPhysics::isOnGround(EntityHandle e)
 {
     if (!m_entOrigin || !isValidEntityIndex(e, m_entCount)) return false;
     const Vec3& o = m_entOrigin[e.index()];
-    TraceResult tr = trace(o, { o.x, o.y - 4.0f, o.z }, m_playerMins, m_playerMaxs);
-    return tr.fraction < 1.0f && tr.normal.y > 0.7f;
+    // Probe from slightly above to avoid the floor plane boundary case
+    const Vec3 probeStart = { o.x, o.y + kClipEpsilon * 4.0f, o.z };
+    const Vec3 probeEnd   = { o.x, o.y - 6.0f, o.z };
+    TraceResult tr = trace(probeStart, probeEnd, m_playerMins, m_playerMaxs);
+    return tr.fraction < 1.0f && !tr.startSolid && tr.normal.y > 0.7f;
 }
 
 EntityHandle AABBPhysics::getGroundEntity(EntityHandle e)
@@ -394,8 +411,9 @@ float AABBPhysics::getGroundElevation(EntityHandle e)
 {
     if (!m_entOrigin || !isValidEntityIndex(e, m_entCount)) return -1e10f;
     const Vec3& o = m_entOrigin[e.index()];
-    TraceResult tr = trace(o, { o.x, o.y - 400.0f, o.z }, m_playerMins, m_playerMaxs);
-    return (tr.fraction < 1.0f) ? tr.endPos.y : o.y - 400.0f;
+    const Vec3 probeStart = { o.x, o.y + 2.0f, o.z };
+    TraceResult tr = trace(probeStart, { o.x, o.y - 400.0f, o.z }, m_playerMins, m_playerMaxs);
+    return (tr.fraction < 1.0f && !tr.startSolid) ? tr.endPos.y : o.y - 400.0f;
 }
 
 // -----------------------------------------------------------------------
@@ -438,176 +456,183 @@ void AABBPhysics::step(float dt)
 //  FIX 13: slide loop breaks immediately on startSolid.
 // -----------------------------------------------------------------------
 TraceResult AABBPhysics::moveSlide(EntityHandle e, const Vec3& wishVel,
-                                   float dt, float wishSpeed)
+    float dt, float wishSpeed)
 {
-    TraceResult result;
-    if (!m_entOrigin || !m_entVelocity || !isValidEntityIndex(e, m_entCount)) return result;
+TraceResult result;
+if (!m_entOrigin || !m_entVelocity || !isValidEntityIndex(e, m_entCount)) return result;
 
-    Vec3 pos = m_entOrigin[e.index()];
-    Vec3 vel = m_entVelocity[e.index()];
+Vec3 pos = m_entOrigin[e.index()];
+Vec3 vel = m_entVelocity[e.index()];
 
-    // Optional Q2-style acceleration blend
-    if (wishSpeed > 0.0f && wishVel.lengthSq() > kMinVelocitySq)
-    {
-        Vec3  wDir   = wishVel.normalized();
-        float curSpd = vel.dot(wDir);
-        float addSpd = wishSpeed - curSpd;
-        if (addSpd > 0.0f)
-        {
-            float accelSpd = 10.0f * wishSpeed * dt;
-            if (accelSpd > addSpd) accelSpd = addSpd;
-            vel = vel + wDir * accelSpd;
-        }
-    }
+// Optional acceleration
+if (wishSpeed > 0.0f && wishVel.lengthSq() > kMinVelocitySq)
+{
+Vec3  wDir   = wishVel.normalized();
+float curSpd = vel.dot(wDir);
+float addSpd = wishSpeed - curSpd;
+if (addSpd > 0.0f)
+{
+float accelSpd = 10.0f * wishSpeed * dt;
+if (accelSpd > addSpd) accelSpd = addSpd;
+vel = vel + wDir * accelSpd;
+}
+}
 
-    // ---- Step-up -------------------------------------------------------
-    //
-    // FIX 12: Must trace UPWARD to stepPos before doing the lateral step
-    // trace. The old code hard-set stepPos = pos + {0,kStepHeight,0} and
-    // did a lateral trace from there without verifying the raised position
-    // was clear. If that position was inside a ceiling brush, traceWorld()
-    // returned startSolid → (bug 11) fraction=1.0 → stepTr.fraction was
-    // always > groundTr.fraction → step accepted → player placed inside
-    // ceiling → every subsequent trace startSolid → infinite fall-through.
-    //
-    // Fix:
-    //   1. Trace UP from pos toward pos+{0,kStepHeight,0}.
-    //   2. Use the actual clear stepPos (upTr.endPos).
-    //   3. If the vertical trace is blocked (upTr.fraction < epsilon),
-    //      skip the step-up entirely (no room above).
-    // --------------------------------------------------------------------
-    Vec3  delta    = vel * dt;
-    float moveDist = delta.length();
-    float stepRemain = 1.0f;
+Vec3  delta    = vel * dt;
+float moveDist = delta.length();
 
-    if (moveDist > kMinMoveDist)
-    {
-        TraceResult groundTr = traceWorld(pos, delta, moveDist, m_playerMins, m_playerMaxs);
-        if (groundTr.fraction < 1.0f && isOnGround(e))
-        {
-            // FIX 12 step 1: verify upward clearance
-            Vec3 stepTarget { pos.x, pos.y + kStepHeight, pos.z };
-            TraceResult upTr = traceWorld(pos,
-                                          { 0.f, kStepHeight, 0.f },
-                                          kStepHeight,
-                                          m_playerMins, m_playerMaxs);
+if (moveDist < kMinMoveDist)
+{
+m_entOrigin[e.index()]   = pos;
+m_entVelocity[e.index()] = vel;
+result.endPos = pos;
+return result;
+}
 
-            // Only proceed if we actually cleared some upward space
-            if (!upTr.startSolid && upTr.fraction > 0.01f)
-            {
-                // FIX 12 step 2: use actual clear position
-                Vec3 stepPos = upTr.endPos;
+// ----------------------------------------------------------------
+// Step-up: if we hit something, try stepping over it
+// ----------------------------------------------------------------
+{
+TraceResult groundTr = traceWorld(pos, delta, moveDist, m_playerMins, m_playerMaxs);
 
-                TraceResult stepTr = traceWorld(stepPos, delta, moveDist,
-                                                m_playerMins, m_playerMaxs);
+bool tryStep = (groundTr.fraction < 1.0f - kClipEpsilon)
+&& !groundTr.startSolid
+&& isOnGround(e);
 
-                // FIX 12 step 3: also reject if the step trace itself started solid
-                if (!stepTr.startSolid &&
-                    stepTr.fraction > groundTr.fraction + 0.01f)
-                {
-                    Vec3 topPos   = stepPos + delta * stepTr.fraction;
-                    Vec3 downEnd  { topPos.x, topPos.y - (kStepHeight + 2.0f), topPos.z };
-                    TraceResult downTr = trace(topPos, downEnd, m_playerMins, m_playerMaxs);
+if (tryStep)
+{
+// 1. Trace upward to find clearance
+TraceResult upTr = traceWorld(pos,
+{0.f, kStepHeight, 0.f}, kStepHeight,
+m_playerMins, m_playerMaxs);
 
-                    if (!downTr.startSolid &&
-                        downTr.fraction < 1.0f && downTr.normal.y > 0.7f)
-                    {
-                        pos = downTr.endPos;
-                        if (vel.y < 0.0f) vel.y = 0.0f;
-                        stepRemain = 1.0f - stepTr.fraction;
-                    }
-                }
-            }
-        }
-    }
+float actualStep = kStepHeight * upTr.fraction;
 
-    // ---- Slide loop ----------------------------------------------------
-    {
-        Vec3  slideVel  = vel;
-        float remainFrac = stepRemain;
-        Vec3  clipNorm1  = Vec3::zero();
-        bool  hasNorm1   = false;
+// Only step if we cleared at least 1 unit upward
+if (!upTr.startSolid && actualStep >= 1.0f)
+{
+Vec3 stepPos = upTr.endPos;
 
-        for (int iter = 0; iter < kMaxSlideIter; ++iter)
-        {
-            if (slideVel.lengthSq() < kMinVelocitySq || remainFrac < kClipEpsilon)
-                break;
+// 2. Trace forward from stepped-up position
+TraceResult stepTr = traceWorld(stepPos, delta, moveDist,
+                 m_playerMins, m_playerMaxs);
 
-            Vec3  d    = slideVel * (dt * remainFrac);
-            float dist = d.length();
-            if (dist < kMinMoveDist) break;
+// 3. Accept the step if we moved further than without stepping
+// Key fix: compare fractions, but also accept if step isn't startSolid
+// and goes further than the ground trace
+if (!stepTr.startSolid && stepTr.fraction > groundTr.fraction)
+{
+Vec3 topPos  = stepPos + (delta / moveDist) * (moveDist * stepTr.fraction);
+Vec3 downEnd { topPos.x, topPos.y - (actualStep + 4.0f), topPos.z };
 
-            TraceResult tr = traceWorld(pos, d, dist, m_playerMins, m_playerMaxs);
+TraceResult downTr = trace(topPos, downEnd, m_playerMins, m_playerMaxs);
 
-            // FIX 13: explicit startSolid break.
-            // tr.fraction = 0, tr.normal = zero. Old code would
-            // remainFrac *= (1-0) = unchanged, then break on zero-normal —
-            // but only after a spurious push. Break immediately.
-            if (tr.startSolid)
-            {
-                // Don't move. Zero velocity to prevent tunnelling next frame.
-                slideVel = Vec3::zero();
-                break;
-            }
+if (!downTr.startSolid && downTr.fraction < 1.0f
+&& downTr.normal.y > 0.7f)
+{
+pos = downTr.endPos;
+if (vel.y < 0.0f) vel.y = 0.0f;
 
-            pos = tr.endPos;
-            remainFrac *= (1.0f - tr.fraction);
+// Done — skip the regular slide loop
+m_entOrigin[e.index()]   = pos;
+m_entVelocity[e.index()] = vel;
+result.endPos = pos;
+return result;
+}
+}
+}
+}
+}
 
-            if (tr.fraction >= 1.0f - kClipEpsilon) break;  // moved freely
+// ----------------------------------------------------------------
+// Slide loop
+// ----------------------------------------------------------------
+Vec3  slideVel  = vel;
+float remainFrac = 1.0f;
+Vec3  clipNorm1  = Vec3::zero();
+bool  hasNorm1   = false;
 
-            // Guard against degenerate zero-length normals
-            if (tr.normal.lengthSq() < 0.5f) break;
+for (int iter = 0; iter < kMaxSlideIter; ++iter)
+{
+if (slideVel.lengthSq() < kMinVelocitySq || remainFrac < kClipEpsilon)
+break;
 
-            float vDotN = slideVel.dot(tr.normal);
-            if (vDotN >= 0.0f)
-            {
-                // Already separating — push out and continue
-                pos = pos + tr.normal * kPenetrationSlack;
-                continue;
-            }
+Vec3  d    = slideVel * (dt * remainFrac);
+float dist = d.length();
+if (dist < kMinMoveDist) break;
 
-            if (!hasNorm1)
-            {
-                slideVel  = slideVel - tr.normal * vDotN;
-                pos       = pos + tr.normal * kPenetrationSlack;
-                clipNorm1 = tr.normal;
-                hasNorm1  = true;
-            }
-            else
-            {
-                // Crease / edge: project onto the intersection edge
-                float normDot = clipNorm1.dot(tr.normal);
-                if (normDot > 0.99f)
-                {
-                    slideVel = slideVel - tr.normal * vDotN;
-                    pos      = pos + tr.normal * kPenetrationSlack;
-                }
-                else
-                {
-                    Vec3  edge    = clipNorm1.cross(tr.normal).normalized();
-                    float edgeSpd = slideVel.dot(edge);
-                    slideVel = edge * edgeSpd;
-                    if (slideVel.dot(clipNorm1) < 0.0f || slideVel.dot(tr.normal) < 0.0f)
-                        slideVel = Vec3::zero();
-                    pos = pos + tr.normal * kPenetrationSlack;
-                }
-            }
+TraceResult tr = traceWorld(pos, d, dist, m_playerMins, m_playerMaxs);
 
-            // Kill velocity into ceilings
-            if (tr.normal.y < -0.1f && slideVel.y > 0.0f)
-                slideVel.y = 0.0f;
-        }
+if (tr.startSolid)
+{
+// Boundary case: push up by a tiny amount and retry once
+Vec3 nudgedPos = pos;
+nudgedPos.y += kClipEpsilon * 4.0f;
+TraceResult tr2 = traceWorld(nudgedPos, d, dist, m_playerMins, m_playerMaxs);
+if (!tr2.startSolid)
+{
+pos = nudgedPos;
+tr  = tr2;
+}
+else
+{
+// Genuinely stuck — stop sliding but preserve velocity
+break;
+}
+}
 
-        vel = slideVel;
-    }
+pos = tr.endPos;
+remainFrac *= (1.0f - tr.fraction);
 
-    m_entOrigin[e.index()]   = pos;
-    m_entVelocity[e.index()] = vel;
+if (tr.fraction >= 1.0f - kClipEpsilon) break;
 
-    result.endPos   = pos;
-    result.fraction = 1.0f;
-    result.normal   = vel.lengthSq() > kMinVelocitySq ? vel.normalized() : Vec3::zero();
-    return result;
+if (tr.normal.lengthSq() < 0.5f) break;
+
+float vDotN = slideVel.dot(tr.normal);
+if (vDotN >= 0.0f)
+{
+pos = pos + tr.normal * kPenetrationSlack;
+continue;
+}
+
+if (!hasNorm1)
+{
+slideVel  = slideVel - tr.normal * vDotN;
+pos       = pos + tr.normal * kPenetrationSlack;
+clipNorm1 = tr.normal;
+hasNorm1  = true;
+}
+else
+{
+float normDot = clipNorm1.dot(tr.normal);
+if (normDot > 0.99f)
+{
+slideVel = slideVel - tr.normal * vDotN;
+pos      = pos + tr.normal * kPenetrationSlack;
+}
+else
+{
+Vec3  edge    = clipNorm1.cross(tr.normal).normalized();
+float edgeSpd = slideVel.dot(edge);
+slideVel = edge * edgeSpd;
+if (slideVel.dot(clipNorm1) < 0.0f || slideVel.dot(tr.normal) < 0.0f)
+slideVel = Vec3::zero();
+pos = pos + tr.normal * kPenetrationSlack;
+}
+}
+
+if (tr.normal.y < -0.1f && slideVel.y > 0.0f)
+slideVel.y = 0.0f;
+}
+
+vel = slideVel;
+
+m_entOrigin[e.index()]   = pos;
+m_entVelocity[e.index()] = vel;
+
+result.endPos = pos;
+result.fraction = 1.0f;
+return result;
 }
 
 } // namespace nova

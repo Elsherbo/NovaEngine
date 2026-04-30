@@ -5,7 +5,7 @@ using gamedir: 'D:\coding\cpp\novaEngine\assets'
 WARNING: failed to find basedir 'D:\coding\cpp\novaEngine\baseq2'
 Loading extended texinfo flags from test.texinfo.json...
 Loading extended content flags from test.content.json...
-6 entities read, 4 are lights.
+7 entities read, 5 are lights.
 
 --- Options Summary ---
     "range" was set to "1.000000" (from game target)
@@ -20,21 +20,21 @@ Loading extended content flags from test.content.json...
 Embree_TraceInit: Embree version: 4.4.0
 Embree_TraceInit: 
 	0 sky faces
-	58 solid faces
+	255 solid faces
 	0 filtered faces
 	0 shadow-casting skip faces
-SetupLights: 4 initial lights
-SetupLights: 4 after surface lights
-SetupLights: 4 after jittering
-Final count: 4 lights, 0 suns in use.
+SetupLights: 5 initial lights
+SetupLights: 5 after surface lights
+SetupLights: 5 after jittering
+Final count: 5 lights, 0 suns in use.
 0 surface light points in use.
 map uses color: true
-lightmap size (total): 13956
+lightmap size (total): 41784
 Lighting Completed.
 
 0 switchable light styles (32 max)
 Writing test.bsp as Quake II BSP IBSP:38
-0.024s seconds elapsed
+0.041s seconds elapsed
 0 empty lightmaps
 
 
