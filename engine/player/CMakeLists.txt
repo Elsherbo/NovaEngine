@@ -1,7 +1,11 @@
 # engine/player/CMakeLists.txt
 # First-person player movement controller.
-# Lives in nova_engine (not nova_game) because the engine main loop
-# owns the PlayerController instance and calls it each tick.
+#
+# NOTE: player_controller.h now includes engine/core/cvar.h and defines
+# inline CVar* registrations (cv_pc_*).  These are registered in the
+# CVarSystem singleton the first time the header is included.
+# nova_core already links nova_vendor_glad transitively, so no new
+# link dependencies are needed here.
 
 add_library(nova_player STATIC
     player_controller.h
@@ -9,12 +13,11 @@ add_library(nova_player STATIC
 )
 
 target_include_directories(nova_player PUBLIC
-    ${CMAKE_SOURCE_DIR}          # engine/player/player_controller.h via "engine/player/..."
-    ${SDL3_INCLUDE_DIR}          # SDL_scancode.h
+    ${CMAKE_SOURCE_DIR}
+    ${SDL3_INCLUDE_DIR}
 )
 
-# nova_player only needs core types + physics interface + platform (InputState).
-# It must NOT link nova_game — that is the entire point of this split.
+# nova_core now provides CVar — nova_player inherits it via this link.
 target_link_libraries(nova_player PUBLIC
     nova_core
     nova_physics

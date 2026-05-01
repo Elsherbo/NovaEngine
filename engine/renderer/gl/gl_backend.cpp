@@ -667,13 +667,12 @@ bool GLBackend::initialize(IPlatform *platform)
         glUseProgram(static_cast<GLuint>(shader));
     }
 
-void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayout *layout)
-{
-    // Default to BSP layout if null
-    if (!layout) layout = &kLayoutBSP;
-
-    (void)slot;
-    if (buffer == INVALID_BUFFER) return;
+    void GLBackend::bindVertexBuffer(BufferHandle buffer, int slot, const VertexLayout *layout)
+    {
+        // Default to BSP layout if null
+        if (!layout) layout = &kLayoutBSP;
+        (void)slot; // TODO: implement multi-slot vertex buffer binding
+        if (buffer == INVALID_BUFFER) return;
 
     GLuint vbo = static_cast<GLuint>(buffer);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);

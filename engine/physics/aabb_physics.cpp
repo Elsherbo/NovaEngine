@@ -236,15 +236,7 @@ bool AABBPhysics::testSolid(const Vec3& origin,
 TraceResult AABBPhysics::traceWorld(const Vec3& start, const Vec3& dir, float dist,
     const Vec3& mins, const Vec3& maxs)
 {
-    // At the top of traceWorld, before the brush loop:
-static bool once = false;
-if (!once) {
-    once = true;
-    fprintf(stdout, "[TW] first call: start=(%.1f,%.1f,%.1f) dir=(%.3f,%.3f,%.3f) dist=%.3f\n",
-        start.x, start.y, start.z, dir.x/dist, dir.y/dist, dir.z/dist, dist);
-}
-
-TraceResult r;
+    TraceResult r;
 r.fraction = 1.0f;
 r.endPos   = start + dir;
 

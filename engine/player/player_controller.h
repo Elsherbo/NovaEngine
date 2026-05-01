@@ -1,39 +1,32 @@
 // ============================================================
 // FILE:    engine/player/player_controller.h
 // MODULE:  Engine > Player
-// PHASE:   2
+// PHASE:   2  (updated: CVar integration)
 // PURPOSE: First-person player movement controller.
-//          Owns all physics-simulation logic for the player:
-//            - Gravity & terminal velocity
-//            - Ground detection / ground snap
-//            - Jump (one-shot edge detection)
-//            - Air drag & ground friction
-//            - Q2 PM_Accelerate-style horizontal acceleration
-//            - moveSlide BSP collision integration
 //
-//          Camera retains only:
-//            - applyMouseLook()
-//            - getViewMatrix() / getProjectionMatrix()
-//            - position sync from PlayerController
+// CHANGE (CVar revision):
+//   All static constexpr feel constants have been replaced with
+//   CVar* registrations via CVarSystem.  The constants are now
+//   tunable at runtime via the in-game console, e.g.:
 //
-//          This class lives in nova_engine (not nova_game) because
-//          the engine main loop drives it directly. Game-specific
-//          player logic (health, weapons, etc.) belongs in nova_game
-//          and is accessed via IGameModule.
+//     pc_jumpspeed 350
+//     pc_friction 4
+//     listcvars
 //
-// USAGE:
-//   PlayerController ctrl;
-//   ctrl.setPhysicsWorld(phys);
-//   ctrl.setEntity(handle);
+//   The kPC_* names are kept as comments next to each registration
+//   so the old values are still visible as defaults.
 //
-//   // Each frame:
-//   ctrl.update(input, dt, cam.getForward(), cam.getRight());
-//   camera.setPosition(ctrl.getEyePosition());
+//   Hull geometry constants (HullHalfX/Y/Z, GroundNormal,
+//   TerminalVelocity, EyeHeight, GroundProbe) are NOT converted to
+//   CVars because they affect collision geometry and are not feel
+//   tuning knobs — changing them at runtime would desync physics.
+//   They remain static constexpr below.
 // ============================================================
 #pragma once
 
 #include "engine/core/math/vec.h"
 #include "engine/entities/entity_id.h"
+#include "engine/core/cvar.h"
 
 namespace nova
 {
@@ -42,42 +35,39 @@ struct InputState;
 class  IPhysicsWorld;
 
 // ---------------------------------------------------------------------------
-// Feel constants — tune here, no hunting through code.
-//
-//  Jump height formula: h = kJumpSpeed² / (2 * kGravity)
-//    kJumpSpeed=350, kGravity=800  →  h ≈ 77 units
-//
-//  kAirControl: 0 = CS-like (no air steering)
-//               1 = Q2-like (partial air steering)
-//               3 = Quake 1-like (strong air steering)
+// Hull / physics constants — NOT CVars (affect collision geometry).
+// Changing these at runtime would require re-creating the physics entity.
 // ---------------------------------------------------------------------------
-static constexpr float kPC_JumpSpeed        = 270.0f;
-static constexpr float kPC_MoveSpeed        = 250.0f;
-static constexpr float kPC_GroundAccel      = 10.0f;
-static constexpr float kPC_AirAccel         = 0.0f;
-static constexpr float kPC_Friction         = 6.0f;
-static constexpr float kPC_StopSpeed        = 100.0f;
-static constexpr float kPC_MaxSpeed         = 320.0f;
-
-// Player AABB half-extents in Y-up engine space.
-// These match what the BSP loader expects for Q2-scale maps
-// (Q2 player hull: ±16 on X/Z, -28 to +28 on Y after q2ToGL).
 static constexpr float kPC_HullHalfX        = 16.0f;
 static constexpr float kPC_HullHalfY        = 28.0f;
 static constexpr float kPC_HullHalfZ        = 16.0f;
-
-// Distance below origin to probe for the ground.
-static constexpr float kPC_GroundProbe = 170.0f;
-
-// Eye height above origin (Q2: 22 units).
 static constexpr float kPC_EyeHeight        = 22.0f;
-
-// Minimum Y-component of a hit normal considered "ground".
-// cos(45°) = 0.707: anything steeper is treated as a wall.
 static constexpr float kPC_GroundNormal     = 0.7f;
-
-// Maximum downward speed (units/s) — prevents tunnelling through thin geometry.
 static constexpr float kPC_TerminalVelocity = 1800.0f;
+static constexpr float kPC_GroundProbe      = 170.0f;
+
+// ---------------------------------------------------------------------------
+// Feel CVars — registered once at program start via inline definitions.
+// Read as cv_XXX->value in the hot path (plain float read — zero overhead).
+//
+// Naming convention:  pc_ prefix = PlayerController
+//   pc_jumpspeed   — upward velocity on jump
+//   pc_movespeed   — base horizontal wish speed (units/s)
+//   pc_groundaccel — PM_Accelerate scale on ground
+//   pc_airaccel    — PM_Accelerate scale in air (0 = CS-like, 1 = Q2-like)
+//   pc_friction    — ground friction coefficient
+//   pc_stopspeed   — speed below which friction applies stopspeed threshold
+//   pc_maxspeed    — max horizontal speed clamp on ground
+//   pc_sprintmult  — multiplier applied to movespeed while shift is held
+// ---------------------------------------------------------------------------
+inline CVar* cv_pc_jumpspeed   = CVarSystem::instance().reg("pc_jumpspeed",   270.0f, "jump impulse (units/s)");
+inline CVar* cv_pc_movespeed   = CVarSystem::instance().reg("pc_movespeed",   250.0f, "base move speed (units/s)");
+inline CVar* cv_pc_groundaccel = CVarSystem::instance().reg("pc_groundaccel",  10.0f, "ground PM_Accelerate scale");
+inline CVar* cv_pc_airaccel    = CVarSystem::instance().reg("pc_airaccel",      0.0f, "air PM_Accelerate scale (0=CS, 1=Q2)");
+inline CVar* cv_pc_friction    = CVarSystem::instance().reg("pc_friction",      6.0f, "ground friction coefficient");
+inline CVar* cv_pc_stopspeed   = CVarSystem::instance().reg("pc_stopspeed",   100.0f, "friction stopspeed threshold");
+inline CVar* cv_pc_maxspeed    = CVarSystem::instance().reg("pc_maxspeed",    320.0f, "max horizontal speed on ground");
+inline CVar* cv_pc_sprintmult  = CVarSystem::instance().reg("pc_sprintmult",   2.0f,  "shift sprint speed multiplier");
 
 class PlayerController
 {
@@ -91,10 +81,7 @@ public:
     void setEntity(EntityHandle e) { m_entity = e; }
     EntityHandle getEntity() const { return m_entity; }
 
-    // ---- Per-frame update (call once per tick before Camera position sync) ----
-    // 'fwd' and 'right' are the camera's horizontal-locked forward and right
-    // vectors (getForward() / getRight()). PlayerController does not need the
-    // full camera orientation — only the movement plane basis.
+    // ---- Per-frame update ----
     void update(const InputState& input, float dt,
                 const Vec3& fwd, const Vec3& right);
 
@@ -105,8 +92,6 @@ public:
 
     // ---- Setters ----
     void setPosition(const Vec3& pos) { m_position = pos; }
-    void setMoveSpeed(float s)        { m_moveSpeed = s; }
-    float getMoveSpeed()        const { return m_moveSpeed; }
 
 private:
     void applyGravity(float dt);
@@ -114,18 +99,13 @@ private:
     void applyAcceleration(const Vec3& wishDir, float speed, float dt);
     bool detectGround();
 
-    // ---- Physics ----
     IPhysicsWorld* m_physics = nullptr;
     EntityHandle   m_entity  = {};
 
-    // ---- State ----
     Vec3  m_position  = {};
     Vec3  m_velocity  = {};
     bool  m_grounded  = false;
-    bool  m_spaceHeld = false;   // edge-detect: prevent hold-to-fly jump
-
-    // ---- Settings ----
-    float m_moveSpeed = kPC_MoveSpeed; // units/s (Q2 maps are large)
+    bool  m_spaceHeld = false;
 
     Vec3 m_playerMins = { -kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ };
     Vec3 m_playerMaxs = {  kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ };

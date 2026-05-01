@@ -69,7 +69,9 @@
 #include "engine/world/iworld.h"
 #include "engine/world/bsp_world.h"
 #include "engine/core/asset_fs.h"
-#include "vendor/GLAD/include/glad/glad.h"
+#include <glad/glad.h>
+#include "engine/core/cvar.h"
+#include "engine/core/console.h"
 
 // Game-module PlayerController (compiled into nova_engine/nova_player,
 // drives the camera from physics in the engine main loop).
@@ -80,12 +82,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 #include <SDL3/SDL_scancode.h>
-#include <GL/gl.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
 
 namespace nova
 {
@@ -215,8 +217,8 @@ void main()
         IPhysicsWorld *m_physics = nullptr;
         AssetFS m_assets;
 
-        // Entity system
-        EntityList   m_entityList;
+        // Entity system (uses the global g_entityList shared with
+        // MapLoader, EntityFactory, and the GameModule DLL).
         EntityHandle m_playerEntity;
         GameDLLLoader m_gameDLL;
 
@@ -234,7 +236,15 @@ void main()
         TextureHandle m_whiteTexture = INVALID_TEXTURE;
         SamplerHandle m_whiteSampler = INVALID_SAMPLER;
         int m_debugIndexCount = 0;
-        int m_debugView = 0; // 0=lit, 1=lightmap gray, 2=lightmap boosted, 3=lm uv
+        //int m_debugView = 0; // 0=lit, 1=lightmap gray, 2=lightmap boosted, 3=lm uv
+        
+        // r_debugview CVar replaces the old int m_debugView.
+        // 0=lit  1=lightmap-gray  2=lightmap-boost  3=lightmap-uv
+        CVar* m_cvDebugView = nullptr;
+    
+        // In-game developer console (tilde to toggle)
+        Console* m_console = nullptr;
+
 
         // External storage for physics (wired to AABBPhysics via setEntityStorage).
         // PlayerController reads/writes through IPhysicsWorld; these backing
@@ -363,9 +373,40 @@ void main()
         // causes z-fighting on coplanar/near-coplanar BSP surfaces.
         m_camera->setNearFar(2.0f, 4096.0f);
 
+        // ---- CVar: register engine-level cvars ----
+        // Player cvars are registered automatically by the inline definitions
+        // in player_controller.h when that header is first included.
+        // Here we register engine-side cvars.
+        m_cvDebugView = CVarSystem::instance().reg(
+            "r_debugview", 0.0f,
+            "render debug view: 0=lit 1=lm-gray 2=lm-boost 3=lm-uv");
+ 
+        // sv_cheats — must exist before any Cheat-flagged cvar is set
+        CVarSystem::instance().reg("sv_cheats", 0.0f, "enable cheat cvars");
+ 
+        // ---- Console ----
+        m_console = new Console();
+
+        m_console->setMouseGrabCallback([this](bool grab)
+        {
+            SDL_Window* win = static_cast<SDL_Window*>(m_platform->getNativeWindow());
+            if (grab)
+            {
+                m_platform->setMouseGrab(true);
+                m_platform->showCursor(false);
+                SDL_SetWindowRelativeMouseMode(win, true);
+            }
+            else
+            {
+                m_platform->setMouseGrab(false);
+                m_platform->showCursor(true);
+                SDL_SetWindowRelativeMouseMode(win, false);
+            }
+        });
+
+
         // ---- PlayerController ----
         m_playerCtrl = new PlayerController();
-        m_playerCtrl->setPhysicsWorld(m_physics);
 
         // ---- Assets ----
         auto dirOf = [](const std::string& p) -> std::string
@@ -411,9 +452,11 @@ void main()
         EntityFactory::init();
         fprintf(stdout, "Engine: EntityFactory initialized (%d built-in classes)\n", EntityFactory::classCount());
 
-        // Standard player hull (32 units tall, 24 wide)
-        const Vec3 playerMins = {-16.f, -16.f, 0.f};
-        const Vec3 playerMaxs = { 16.f,  16.f, 56.f};
+        // Standard player hull — consistent with AABBPhysics setPlayerBounds.
+        // Physics hull is centered at origin: {-16,-28,-16} to {16,28,16} (32×56×32).
+        // Entity storage uses feet-at-origin convention (Z=0 at feet, Z=32 at head).
+        const Vec3 playerMins = {-kPC_HullHalfX, -kPC_HullHalfY, 0.f};
+        const Vec3 playerMaxs = { kPC_HullHalfX,  kPC_HullHalfY, kPC_HullHalfZ * 2.f};
 
         // ---- Game DLL ----
         // Load before BSP so game->loadMap() can be called immediately after upload.
@@ -456,8 +499,14 @@ void main()
                 // ---- Create physics world ---
                 m_physics = new AABBPhysics();
                 m_physics->setWorld(m_bspWorld->collisionWorld());
-                // Cast to AABBPhysics for entity storage (not in interface)
+
+                // ---- Create player entity FIRST in g_entityList so it gets index 0 ----
+                // This MUST happen before MapLoader::load(), which also spawns into
+                // g_entityList. The physics external storage (setEntityStorage) only
+                // tracks index 0, so the player MUST be at index 0.
+                m_playerEntity = g_entityList.create("player");
                 static_cast<AABBPhysics*>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
+
                 static_cast<AABBPhysics*>(m_physics)->setPlayerBounds(
                     Vec3{-kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ},
                     Vec3{ kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ}
@@ -477,29 +526,29 @@ void main()
 
                 Vec3 spawn = m_bspWorld->getSpawnOrigin();
                 // Skip floor trace - use spawn origin directly
-                
+
                 Vec3 safeSpawn = spawn;
                 {
                     const Vec3 pMins = { -kPC_HullHalfX, -kPC_HullHalfY, -kPC_HullHalfZ };
                     const Vec3 pMaxs = {  kPC_HullHalfX,  kPC_HullHalfY,  kPC_HullHalfZ };
-                
+
                     auto isSpawnSolid = [&](const Vec3& pos) -> bool {
                         TraceResult tr = m_physics->trace(
                             pos, {pos.x, pos.y - 1.0f, pos.z}, pMins, pMaxs);
                         return tr.startSolid;
                     };
-                
+
                     // Nudge upward until not solid
                     for (int i = 0; i < 128 && isSpawnSolid(safeSpawn); ++i)
                         safeSpawn.y += 1.0f;
-                
+
                     // If still solid after going up, try moving forward (-Z in GL)
                     if (isSpawnSolid(safeSpawn)) {
                         safeSpawn = spawn;
                         for (int i = 0; i < 128 && isSpawnSolid(safeSpawn); ++i)
                             safeSpawn.z -= 1.0f;
                     }
-                
+
                     fprintf(stdout, "Engine: safe spawn at (%.1f, %.1f, %.1f)\n",
                         safeSpawn.x, safeSpawn.y, safeSpawn.z);
                 }
@@ -516,11 +565,8 @@ void main()
                 fprintf(stdout, "Engine: BSP loaded, spawn at (%.1f, %.1f, %.1f)\n",
                         safeSpawn.x, safeSpawn.y, safeSpawn.z);
 
-                // ---- Create player entity in EntityList (Problem 6c) ----
-                // This is a game-logic copy of the player; AABBPhysics continues
-                // to use the external m_cameraPosition/m_cameraVelocity storage.
-                m_playerEntity = m_entityList.create("player");
-                if (Entity* p = m_entityList.get(m_playerEntity))
+                // ---- Finish player entity setup (origin, bounds, etc.) ----
+                if (Entity* p = g_entityList.get(m_playerEntity))
                 {
                     p->origin   = safeSpawn;
                     p->velocity = Vec3{0.f, 0.f, 0.f};
@@ -528,7 +574,6 @@ void main()
                     p->maxs     = playerMaxs;
                     p->state    = STATE_ALIVE;
 
-                    // NOW set entity after it's created
                     m_playerCtrl->setEntity(m_playerEntity);
 
                     // Notify game DLL about player spawn
@@ -637,6 +682,9 @@ void main()
                 m_renderer->destroySampler(m_whiteSampler);
         }
 
+        delete m_console;
+        m_console = nullptr;
+
         delete m_playerCtrl;
         m_playerCtrl = nullptr;
 
@@ -707,90 +755,117 @@ void main()
     void Engine::update(float dt)
     {
         InputState input{};
+        // We need the previous frame's InputState for edge detection in
+        // the console and for the F-key toggles.  Keep it as a static.
+        static InputState prevInput{};
+ 
         if (!m_platform->pollInput(input))
         {
             m_running = false;
             return;
         }
-
-        if (input.keys[SDL_SCANCODE_ESCAPE])
+ 
+        // ---- Console input (must run first — swallows all other input) ----
+        // NOTE: no early return here. prevInput is always updated at the
+        // bottom of update() so key edge-detection stays correct every frame.
+        // The isOpen() guard below skips all gameplay input while open.
+        if (m_console)
+            m_console->handleInput(input, prevInput);
+ 
+        const bool consoleOpen = m_console && m_console->isOpen();
+ 
+        // ---- Escape (only when console is closed) ----
+        if (!consoleOpen && input.keys[SDL_SCANCODE_ESCAPE])
             m_running = false;
-
-        static bool prevF1 = false;
-        const bool f1Down = input.keys[SDL_SCANCODE_F1];
-        if (f1Down && !prevF1)
+ 
+        if (!consoleOpen)
         {
-            static int cycles = 0;
-            cycles++;
-            SDL_Window *win = static_cast<SDL_Window *>(m_platform->getNativeWindow());
-            if (cycles % 2 == 0)
+            // ---- F1: mouse grab toggle ----
+            static bool prevF1 = false;
+            const bool f1Down = input.keys[SDL_SCANCODE_F1];
+            if (f1Down && !prevF1)
             {
-                m_platform->setMouseGrab(true);
-                m_platform->showCursor(false);
-                SDL_SetWindowRelativeMouseMode(win, true);
+                static int cycles = 0;
+                cycles++;
+                SDL_Window* win = static_cast<SDL_Window*>(m_platform->getNativeWindow());
+                if (cycles % 2 == 0)
+                {
+                    m_platform->setMouseGrab(true);
+                    m_platform->showCursor(false);
+                    SDL_SetWindowRelativeMouseMode(win, true);
+                }
+                else
+                {
+                    m_platform->setMouseGrab(false);
+                    m_platform->showCursor(true);
+                    SDL_SetWindowRelativeMouseMode(win, false);
+                }
             }
-            else
+            prevF1 = f1Down;
+ 
+            // ---- F2: cycle r_debugview CVar ----
+            static bool prevF2 = false;
+            const bool f2Down = input.keys[SDL_SCANCODE_F2];
+            if (f2Down && !prevF2 && m_cvDebugView)
             {
-                m_platform->setMouseGrab(false);
-                m_platform->showCursor(true);
-                SDL_SetWindowRelativeMouseMode(win, false);
+                const int next = (static_cast<int>(m_cvDebugView->value) + 1) % 4;
+                CVarSystem::instance().set(m_cvDebugView, static_cast<float>(next));
+                const char* modeName =
+                    (next == 0) ? "lit" :
+                    (next == 1) ? "lightmap-gray" :
+                    (next == 2) ? "lightmap-boost" :
+                                   "lightmap-uv";
+                Logger::instance().info("r_debugview = %d (%s)", next, modeName);
             }
-        }
-        prevF1 = f1Down;
-
-        static bool prevF2 = false;
-        const bool f2Down = input.keys[SDL_SCANCODE_F2];
-        if (f2Down && !prevF2)
-        {
-            m_debugView = (m_debugView + 1) % 4;
-            const char *modeName =
-                (m_debugView == 0) ? "lit" :
-                (m_debugView == 1) ? "lightmap-gray" :
-                (m_debugView == 2) ? "lightmap-boost" :
-                                     "lightmap-uv";
-            fprintf(stdout, "Engine: debug view = %s (F2 to cycle)\n", modeName);
-        }
-        prevF2 = f2Down;
-
-        // F3: print PVS stats
-        static bool prevF3 = false;
-        const bool f3Down = input.keys[SDL_SCANCODE_F3];
-        if (f3Down && !prevF3 && m_bspWorld)
-        {
-            Vec3 pos = m_camera->getPosition();
-            int camCluster = m_bspWorld->clusterForPoint(pos);
-            fprintf(stdout, "PVS: cluster=%d  visible from self=%s\n",
-                camCluster,
-                m_bspWorld->isClusterVisible(camCluster, camCluster) ? "yes" : "no");
-        }
-        prevF3 = f3Down;
-
-        // ---- Mouse look ----
-        m_camera->applyMouseLook(
-            static_cast<float>(input.mouseDeltaX),
-            static_cast<float>(input.mouseDeltaY));
-
-        // ---- PlayerController: movement physics ----
-        if (m_playerCtrl)
-        {
-            m_playerCtrl->update(input, dt,
-                                  m_camera->getForward(),
-                                  m_camera->getRight());
-            // Sync camera position from physics result
-            m_camera->setPosition(m_playerCtrl->getEyePosition());
-        }
-
-        // ---- Entity think dispatch (Problem 6f) ----
-        m_entityList.think(dt);
-
-        // ---- Game DLL think ----
-        if (IGameModule* game = m_gameDLL.get())
-            game->think(dt);
-
-        // ---- Sync player entity origin from camera (Problem 6e) ----
-        if (Entity* p = m_entityList.get(m_playerEntity))
-            p->origin = m_camera->getPosition();
+            prevF2 = f2Down;
+ 
+            // ---- F3: PVS debug ----
+            static bool prevF3 = false;
+            const bool f3Down = input.keys[SDL_SCANCODE_F3];
+            if (f3Down && !prevF3 && m_bspWorld)
+            {
+                Vec3 pos = m_camera->getPosition();
+                int camCluster = m_bspWorld->clusterForPoint(pos);
+                Logger::instance().info("PVS: cluster=%d  visible from self=%s",
+                    camCluster,
+                    m_bspWorld->isClusterVisible(camCluster, camCluster) ? "yes" : "no");
+            }
+            prevF3 = f3Down;
+ 
+            // ---- Mouse look ----
+            m_camera->applyMouseLook(
+                static_cast<float>(input.mouseDeltaX),
+                static_cast<float>(input.mouseDeltaY));
+ 
+            // ---- PlayerController: movement physics ----
+            if (m_playerCtrl)
+            {
+                m_playerCtrl->update(input, dt,
+                                      m_camera->getForward(),
+                                      m_camera->getRight());
+                m_camera->setPosition(m_playerCtrl->getEyePosition());
+            }
+ 
+            // ---- Entity think ----
+            g_entityList.think(dt);
+ 
+            // ---- Game DLL think ----
+            if (IGameModule* game = m_gameDLL.get())
+                game->think(dt);
+ 
+            // ---- Sync player entity origin ----
+            if (Entity* p = g_entityList.get(m_playerEntity))
+                p->origin = m_camera->getPosition();
+ 
+        } // end !consoleOpen
+ 
+        // Always update prevInput — even when console is open.
+        // This ensures edge-detection (key down/up) works correctly
+        // every frame for both the console and gameplay keys.
+        prevInput = input;
     }
+
+
 
     // -----------------------------------------------------------------------
     void Engine::render()
@@ -810,9 +885,10 @@ void main()
         m_renderer->bindShader(m_shader);
         m_renderer->bindUniformBuffer(m_uboBuffer, 0);
         {
+            const int dv = m_cvDebugView ? static_cast<int>(m_cvDebugView->value) : 0;
             GLint debugLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uDebugView");
             if (debugLoc >= 0)
-                glUniform1i(debugLoc, m_debugView);
+                glUniform1i(debugLoc, dv);
         }
 
         if (m_bsp)
@@ -832,7 +908,12 @@ void main()
             }
         }
 
+        // ---- Console overlay (renders on top of everything) ----
+        if (m_console)
+        m_console->render(m_renderer->getWidth(), m_renderer->getHeight());
+
         m_renderer->present();
+ 
     }
 
 } // namespace nova
