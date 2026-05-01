@@ -79,6 +79,10 @@ uint32_t Text2D::s_fontTex    = 0;
 uint32_t Text2D::s_prog       = 0;
 uint32_t Text2D::s_vbo        = 0;
 uint32_t Text2D::s_vao        = 0;
+int      Text2D::s_uScreenSizeLoc = -1;
+int      Text2D::s_uFontTexLoc    = -1;
+uint32_t Text2D::s_fillProg         = 0;
+int      Text2D::s_fillScreenSizeLoc = -1;
 bool     Text2D::s_initialized = false;
 bool     Text2D::s_inFrame     = false;
 int      Text2D::s_screenW     = 0;
@@ -186,7 +190,7 @@ static const uint8_t kFont8x8[] = {
     0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00, // '|' 124
     0x30,0x18,0x18,0x0E,0x18,0x18,0x30,0x00, // '}' 125
     0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00, // '~' 126
-    0xFF,0x81,0x81,0x81,0x81,0x81,0x81,0xFF, // DEL→block 127
+    0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF, // DEL→solid block 127
 };
 
 // 128×128 atlas: 16 columns × 16 rows of 8×8 char cells.
@@ -216,6 +220,34 @@ static void buildAtlas()
         }
     }
 }
+
+// ============================================================
+// Fill shaders — solid-color quads (no texture, no discard)
+// ============================================================
+static const char* kVSFill = R"GLSL(
+#version 450 core
+layout(location = 0) in vec2 aPos;
+layout(location = 2) in vec4 aColor;
+uniform vec2 uScreenSize;
+out vec4 vColor;
+void main()
+{
+    vec2 ndc = (aPos / uScreenSize) * 2.0 - 1.0;
+    ndc.y = -ndc.y;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+    vColor = aColor;
+}
+)GLSL";
+
+static const char* kFSFill = R"GLSL(
+#version 450 core
+in vec4 vColor;
+out vec4 fragColor;
+void main()
+{
+    fragColor = vColor;
+}
+)GLSL";
 
 // ============================================================
 // Shaders
@@ -322,6 +354,15 @@ void Text2D::init()
     glBindTexture(GL_TEXTURE_2D, 0);
 
     s_prog = compileProg(kVS2D, kFS2D);
+    s_uScreenSizeLoc = glGetUniformLocation(s_prog, "uScreenSize");
+    s_uFontTexLoc    = glGetUniformLocation(s_prog, "uFontTex");
+
+    s_fillProg = compileProg(kVSFill, kFSFill);
+    s_fillScreenSizeLoc = glGetUniformLocation(s_fillProg, "uScreenSize");
+    if (s_uScreenSizeLoc == -1)
+        fprintf(stderr, "Text2D::init: WARNING — 'uScreenSize' uniform not found in shader\n");
+    if (s_uFontTexLoc == -1)
+        fprintf(stderr, "Text2D::init: WARNING — 'uFontTex' uniform not found in shader\n");
 
     glGenBuffers(1, &s_vbo);
     glGenVertexArrays(1, &s_vao);
@@ -352,6 +393,7 @@ void Text2D::shutdown()
 {
     if (s_fontTex) { glDeleteTextures(1,      &s_fontTex); s_fontTex = 0; }
     if (s_prog)    { glDeleteProgram(s_prog);               s_prog    = 0; }
+    if (s_fillProg){ glDeleteProgram(s_fillProg);            s_fillProg= 0; }
     if (s_vbo)     { glDeleteBuffers(1,        &s_vbo);     s_vbo     = 0; }
     if (s_vao)     { glDeleteVertexArrays(1,   &s_vao);     s_vao     = 0; }
     s_initialized = false;
@@ -403,20 +445,30 @@ void Text2D::emitQuad(float x, float y, float w, float h,
 }
 
 // ============================================================
-// drawFill
+// drawFill — solid colour rectangle via dedicated fill shader
 // ============================================================
 void Text2D::drawFill(int x, int y, int w, int h, Vec4 color)
 {
-    // Cell 127 = row 7, col 15 → bottom-right full block (all 0xFF).
-    // Grid: 16 cols × 16 rows of 8×8 cells in a 128×128 atlas.
-    const float u0 = (15 * 8 + 0.5f) / 128.0f;
-    const float v0 = (7 * 8 + 0.5f) / 128.0f;
-    const float u1 = (15 * 8 + 7.5f) / 128.0f;
-    const float v1 = (7 * 8 + 7.5f) / 128.0f;
+    // Flush any pending atlas quads first (they use the atlas shader)
+    flush();
 
-    emitQuad((float)x, (float)y, (float)w, (float)h,
-             u0, v0, u1, v1,
-             color.x, color.y, color.z, color.w);
+    // Emit the fill quad and draw immediately with the fill shader.
+    // No texture sampling, no discard — 100% opaque/transparent as specified.
+    const float xf = (float)x, yf = (float)y, wf = (float)w, hf = (float)h;
+    const float verts[kVertsPerQuad][kFloatsPerVertex] = {
+        { xf,    yf,    0, 0, color.x, color.y, color.z, color.w },
+        { xf+wf, yf,    0, 0, color.x, color.y, color.z, color.w },
+        { xf,    yf+hf, 0, 0, color.x, color.y, color.z, color.w },
+        { xf+wf, yf,    0, 0, color.x, color.y, color.z, color.w },
+        { xf+wf, yf+hf, 0, 0, color.x, color.y, color.z, color.w },
+        { xf,    yf+hf, 0, 0, color.x, color.y, color.z, color.w },
+    };
+
+    float* dst = s_vbuf;
+    std::memcpy(dst, verts, sizeof(verts));
+    s_vertexCount = kVertsPerQuad;
+    flushFill();
+    s_vertexCount = 0;
 }
 
 // ============================================================
@@ -463,6 +515,31 @@ int Text2D::stringWidth(const char* text)
     int w = 0;
     while (text && *text++) w += 8;
     return w;
+}
+
+// ============================================================
+// flushFill — draw fill quads with dedicated solid-color shader
+// ============================================================
+void Text2D::flushFill()
+{
+    if (s_vertexCount == 0) return;
+
+    // Save the current program so we can restore it
+    GLint prevProg = 0;
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+
+    glUseProgram(s_fillProg);
+    if (s_fillScreenSizeLoc >= 0)
+        glUniform2f(s_fillScreenSizeLoc, (float)s_screenW, (float)s_screenH);
+
+    glBindVertexArray(s_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0,
+                    (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)), s_vbuf);
+    glDrawArrays(GL_TRIANGLES, 0, s_vertexCount);
+
+    glUseProgram(prevProg);
+    s_vertexCount = 0;
 }
 
 // ============================================================
@@ -550,9 +627,10 @@ void Text2D::flush()
 
     // ---- Bind shader ----
     glUseProgram(s_prog);
-    glUniform2f(glGetUniformLocation(s_prog, "uScreenSize"),
-                (float)s_screenW, (float)s_screenH);
-    glUniform1i(glGetUniformLocation(s_prog, "uFontTex"), 0);
+    if (s_uScreenSizeLoc >= 0)
+        glUniform2f(s_uScreenSizeLoc, (float)s_screenW, (float)s_screenH);
+    if (s_uFontTexLoc >= 0)
+        glUniform1i(s_uFontTexLoc, 0);
 
     // ---- Bind font texture to slot 0 ----
     glActiveTexture(GL_TEXTURE0);

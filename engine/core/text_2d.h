@@ -51,6 +51,7 @@ public:
 
 private:
     static void flush();
+    static void flushFill();
 
     // Emits one quad (6 vertices) into s_vbuf.
     // All 8 floats per vertex are written correctly.
@@ -62,7 +63,11 @@ private:
     static uint32_t s_fontTex;
     static uint32_t s_prog;
     static uint32_t s_vbo;
-    static uint32_t s_vao;       // FIX 2: dedicated VAO (not VAO 0)
+    static uint32_t s_vao;
+    static int s_uScreenSizeLoc;
+    static int s_uFontTexLoc;
+    static uint32_t s_fillProg;
+    static int s_fillScreenSizeLoc;
     static bool     s_initialized;
 
     // Drawing state
