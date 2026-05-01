@@ -1,8 +1,10 @@
 // ============================================================
-// FILE:    engine/core/console.h  (v4 — Text2D + history + scrollback)
+// FILE:    engine/core/console.h  (v5 — Quake 2 / Source Engine style)
 // MODULE:  Core > Console
 // ============================================================
 #pragma once
+
+#include "engine/core/math/vec.h"
 
 #include <string>
 #include <vector>
@@ -36,6 +38,9 @@ public:
     void close()        { m_open = false; m_inputBuf.clear(); m_historyIdx = -1; }
     void toggle()       { m_open ? close() : open(); }
 
+    // Add a line to scrollback from outside (e.g. Logger hook)
+    void addLine(const std::string& line);
+
 private:
     void submit(const char* line);
 
@@ -43,6 +48,9 @@ private:
     std::string m_inputBuf;
     int         m_inputPos  = 0;  // cursor position in inputBuf
     bool        m_prevGrave = false;
+
+    // Slide animation state (0.0 = closed, 1.0 = fully open)
+    float       m_slideT    = 0.0f;
 
     // Command history
     static constexpr int kMaxHistory = 64;
