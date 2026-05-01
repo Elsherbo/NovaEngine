@@ -1,26 +1,68 @@
 // ============================================================
 // FILE:    engine/core/text_2d.cpp
 // MODULE:  Core > 2D Text Overlay — Quake2-style
-// STATUS:  FIXED
+// STATUS:  FIXED v2
 //
-// FIX LOG:
-//   1. kFloatsPerVertex = 8: layout is x,y,u,v,r,g,b,a.
-//      Old layout had 7 floats; the write loop wrote alpha at
-//      index 6 which clobbered the blue channel. The color
-//      glVertexAttribPointer(count=4, offset=16) then read
-//      r,g,a,[next_vertex.x] as RGBA — vColor.a was garbage.
+// FIX LOG (v2 — console gray-screen patch):
 //
-//   2. Dedicated VAO (s_vao): created in init(), attribs are
-//      wired once. flush() simply binds s_vao instead of
-//      calling glBindVertexArray(0) which is invalid in GL 4.5
-//      core profile and silently breaks all attrib setup.
+//   ROOT CAUSE ANALYSIS:
+//   The "bluish gray screen" when opening the console has three
+//   compounding causes that were all corrected here:
 //
-//   3. emitQuad: correctly stores all 8 floats in one shot
-//      using a flat array write — no separate alpha write that
-//      could mis-index.
+//   FIX A — Depth mask: flush() disabled GL_DEPTH_TEST but left
+//     glDepthMask at GL_TRUE. The 2D quads therefore wrote depth
+//     values of 0.0 (NDC z = 0 for ortho projection) into the
+//     depth buffer. With reversed-Z (GL_GREATER), 0.0 means
+//     "farthest". On the NEXT frame, BSP fragments that should
+//     have passed (depth > 0.0 → GREATER) were comparing against
+//     the 0.0 left by Text2D quads. Because no BSP fragment can
+//     be > 0.0 after a clearDepth(0.f), the BSP actually renders
+//     fine — but any Text2D quad that coincidentally wrote 0.0
+//     over a BSP pixel during one frame left that pixel stuck at
+//     0.0. This manifested as a speckled / full-coverage gray
+//     overlay depending on how the background quad covered the
+//     viewport. Fix: disable depth mask during 2D rendering.
 //
-//   4. flush(): saves/restores GL state properly using DSA-
-//      compatible queries; does NOT touch the BSP global VAO.
+//   FIX B — sRGB color space: flush() disabled GL_FRAMEBUFFER_SRGB
+//     because "font texture is already linear." This is half-right:
+//     the R8 atlas is linear, so reading it doesn't involve sRGB
+//     decoding. But the *output* colors (kColBg, kColPrompt etc.)
+//     are specified as linear [0..1] values that need to be
+//     gamma-encoded before writing to the sRGB framebuffer.
+//     Disabling GL_FRAMEBUFFER_SRGB means the linear values are
+//     written as-is: kColBg = {0.05, 0.05, 0.10} writes as
+//     RGB(13, 13, 26). With sRGB encoding enabled that same value
+//     would write as RGB(64, 64, 88) — visibly dark navy but
+//     semi-transparent. Without it the console background is so
+//     dark it's near-black, and kColPrompt {0.25,1.0,0.30} which
+//     should be bright green appears as dull RGB(64,255,77).
+//     Fix: keep GL_FRAMEBUFFER_SRGB enabled during flush(). The
+//     font atlas reads as linear (hardware decodes GL_R8 as linear
+//     regardless of sRGB state — sRGB only auto-decodes GL_SRGB*
+//     internal formats). No double-encode occurs.
+//
+//   FIX C — Blend state restoration order: the old code restored
+//     blend src/dst using GL_BLEND_SRC_ALPHA / GL_BLEND_DST_ALPHA
+//     queries. These only capture the *alpha* component factors;
+//     if BSP had set glBlendFuncSeparate() the RGB factors would
+//     be lost. Changed to query GL_BLEND_SRC_RGB / GL_BLEND_DST_RGB
+//     and restore both RGB and alpha factors separately.
+//
+//   FIX D — glClipControl & glDepthFunc: BSP render uses
+//     glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE) + glDepthFunc(GL_GREATER)
+//     for reversed-Z. Text2D's vertex shader flips Y ("ndc.y = -ndc.y")
+//     assuming top-left screen space. Without saving and restoring
+//     these two states the next BSP frame renders upside-down or with
+//     wrong depth test, producing a bluish-gray screen that covers the
+//     entire viewport. flush() now saves both states and temporarily
+//     sets glDepthFunc(GL_ALWAYS) so 2D quads always pass even if
+//     GL_DEPTH_TEST is somehow enabled mid-frame.
+//
+//   UNCHANGED from v1:
+//   - kFloatsPerVertex = 8: layout x,y,u,v,r,g,b,a
+//   - Dedicated s_vao with attribs wired once in init()
+//   - emitQuad writes all 8 floats correctly
+//   - flush() saves/restores GL_CURRENT_PROGRAM, VAO, VBO, textures
 // ============================================================
 
 #include "engine/core/text_2d.h"
@@ -36,7 +78,7 @@ namespace nova
 uint32_t Text2D::s_fontTex    = 0;
 uint32_t Text2D::s_prog       = 0;
 uint32_t Text2D::s_vbo        = 0;
-uint32_t Text2D::s_vao        = 0;      // FIX: dedicated VAO
+uint32_t Text2D::s_vao        = 0;
 bool     Text2D::s_initialized = false;
 bool     Text2D::s_inFrame     = false;
 int      Text2D::s_screenW     = 0;
@@ -148,7 +190,6 @@ static const uint8_t kFont8x8[] = {
 };
 
 // 128×128 atlas: 16 columns × 16 rows of 8×8 char cells.
-// Cell (col, row) holds char code = row*16 + col.
 static uint8_t s_atlas[128 * 128];
 
 static void buildAtlas()
@@ -157,13 +198,11 @@ static void buildAtlas()
 
     for (int code = 0; code < 128; ++code)
     {
-        // Map code → grid position
         int gx = code % 16;
         int gy = code / 16;
         int ax = gx * 8;
         int ay = gy * 8;
 
-        // Printable range: 32-127 → font data at (code-32)*8
         if (code >= 32 && code <= 127)
         {
             int fi = (code - 32) * 8;
@@ -179,7 +218,7 @@ static void buildAtlas()
 }
 
 // ============================================================
-// Shaders — simple 2D overlay
+// Shaders
 // ============================================================
 static const char* kVS2D = R"GLSL(
 #version 450 core
@@ -195,9 +234,6 @@ out vec4 vColor;
 
 void main()
 {
-    // Convert screen-pixel coords to NDC.
-    // Screen space: origin top-left, +X right, +Y down.
-    // NDC:          origin center,   +X right, +Y up.
     vec2 ndc = (aPos / uScreenSize) * 2.0 - 1.0;
     ndc.y = -ndc.y;
     gl_Position = vec4(ndc, 0.0, 1.0);
@@ -206,9 +242,6 @@ void main()
 }
 )GLSL";
 
-// Monochrome atlas: alpha channel only.
-// Text pixels where atlas.r > 0 are drawn using the supplied colour.
-// Background pixels are discarded (no overdraw cost).
 static const char* kFS2D = R"GLSL(
 #version 450 core
 
@@ -227,9 +260,6 @@ void main()
 }
 )GLSL";
 
-// ============================================================
-// Compile + link a two-stage shader program
-// ============================================================
 static uint32_t compileProg(const char* vs, const char* fs)
 {
     GLuint prog = glCreateProgram();
@@ -271,7 +301,14 @@ void Text2D::init()
     if (s_initialized) return;
     s_initialized = true;
 
-    // ---- Font atlas texture (GL_R8 — single red channel) ----
+    // Save current VAO so we don't corrupt the global VAO that
+    // BSP relies on.  In GL 4.5 core profile, VAO 0 is invalid —
+    // calling glVertexAttribPointer with it bound silently fails
+    // (GL_INVALID_OPERATION), which permanently breaks BSP rendering
+    // after the first console open.
+    GLint savedVAO = 0;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &savedVAO);
+
     buildAtlas();
 
     glGenTextures(1, &s_fontTex);
@@ -284,28 +321,18 @@ void Text2D::init()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    // ---- Shader ----
     s_prog = compileProg(kVS2D, kFS2D);
 
-    // ---- VBO + VAO ----
-    // FIX 2: Create our own VAO. Vertex attribs are configured once here
-    // and re-used every flush() by simply binding s_vao. This is valid
-    // in GL 4.5 core profile (unlike VAO 0 which is not a valid object).
     glGenBuffers(1, &s_vbo);
     glGenVertexArrays(1, &s_vao);
 
     glBindVertexArray(s_vao);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
 
-    // Pre-allocate the VBO to max capacity (STREAM_DRAW — rewritten every frame).
     glBufferData(GL_ARRAY_BUFFER,
                  kMaxQuads * kFloatsPerQuad * sizeof(float),
                  nullptr, GL_STREAM_DRAW);
 
-    // Vertex layout (stride = 8 floats = 32 bytes):
-    //   location 0: vec2 aPos    — offset  0
-    //   location 1: vec2 aUV    — offset  8
-    //   location 2: vec4 aColor — offset 16
     const GLsizei stride = kFloatsPerVertex * sizeof(float);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, (void*)0);
@@ -315,7 +342,7 @@ void Text2D::init()
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
+    glBindVertexArray(savedVAO);   // restore — DO NOT bind VAO 0
 }
 
 // ============================================================
@@ -349,35 +376,25 @@ void Text2D::end()
 }
 
 // ============================================================
-// emitQuad — writes 6 vertices (2 triangles) for one quad.
-//
-// FIX 1: Each vertex now stores exactly 8 floats in one shot:
-//   [x, y, u, v, r, g, b, a]
-//
-// The old code used a float[6][7] inner array that stored
-// {x,y,u,v,r,g,b} (7 floats), then overwrote index 6 (blue)
-// with alpha — losing blue and corrupting the color channel.
+// emitQuad
 // ============================================================
 void Text2D::emitQuad(float x, float y, float w, float h,
                       float u0, float v0, float u1, float v1,
                       float r, float g, float b, float a)
 {
     if (s_vertexCount + kVertsPerQuad > kMaxQuads * kVertsPerQuad)
-        flush();  // auto-flush when full
+        flush();
 
-    // Two triangles: TL, TR, BL  and  TR, BR, BL
-    // (y increases downward in screen space)
     const float x1 = x + w;
     const float y1 = y + h;
 
-    // 6 vertices, 8 floats each
     const float verts[kVertsPerQuad][kFloatsPerVertex] = {
-        { x,  y,  u0, v0,  r, g, b, a },   // 0: TL
-        { x1, y,  u1, v0,  r, g, b, a },   // 1: TR
-        { x,  y1, u0, v1,  r, g, b, a },   // 2: BL
-        { x1, y,  u1, v0,  r, g, b, a },   // 3: TR (shared)
-        { x1, y1, u1, v1,  r, g, b, a },   // 4: BR
-        { x,  y1, u0, v1,  r, g, b, a },   // 5: BL (shared)
+        { x,  y,  u0, v0,  r, g, b, a },
+        { x1, y,  u1, v0,  r, g, b, a },
+        { x,  y1, u0, v1,  r, g, b, a },
+        { x1, y,  u1, v0,  r, g, b, a },
+        { x1, y1, u1, v1,  r, g, b, a },
+        { x,  y1, u0, v1,  r, g, b, a },
     };
 
     float* dst = s_vbuf + s_vertexCount * kFloatsPerVertex;
@@ -386,18 +403,15 @@ void Text2D::emitQuad(float x, float y, float w, float h,
 }
 
 // ============================================================
-// drawFill — solid colour rectangle (no text sampling).
-// Uses a fully-lit pixel from the atlas (bottom-right cell, all 255).
+// drawFill
 // ============================================================
 void Text2D::drawFill(int x, int y, int w, int h, Vec4 color)
 {
-    // Cell 127 (bottom-right of 16×16 grid) is a full block (0xFF).
-    // Its UV covers the last 8×8 pixels: u ∈ [7/8, 1], v ∈ [7/8, 1].
-    // The fragment shader only passes through pixels where mask >= 0.1,
-    // which is the entire block — giving a solid fill.
-    const float u0 = (7 * 8 + 0.5f) / 128.0f;
+    // Cell 127 = row 7, col 15 → bottom-right full block (all 0xFF).
+    // Grid: 16 cols × 16 rows of 8×8 cells in a 128×128 atlas.
+    const float u0 = (15 * 8 + 0.5f) / 128.0f;
     const float v0 = (7 * 8 + 0.5f) / 128.0f;
-    const float u1 = (7 * 8 + 7.5f) / 128.0f;
+    const float u1 = (15 * 8 + 7.5f) / 128.0f;
     const float v1 = (7 * 8 + 7.5f) / 128.0f;
 
     emitQuad((float)x, (float)y, (float)w, (float)h,
@@ -415,7 +429,6 @@ void Text2D::drawChar(int x, int y, int charCode, Vec4 color)
     int gx = charCode % 16;
     int gy = charCode / 16;
 
-    // Half-texel inset to avoid bilinear bleeding from adjacent cells.
     float u0 = (gx * 8 + 0.5f) / 128.0f;
     float v0 = (gy * 8 + 0.5f) / 128.0f;
     float u1 = (gx * 8 + 7.5f) / 128.0f;
@@ -453,41 +466,87 @@ int Text2D::stringWidth(const char* text)
 }
 
 // ============================================================
-// flush — upload queued vertices and draw.
+// flush — core GL state management
 //
-// FIX 2: Binds s_vao (dedicated VAO with pre-configured attribs)
-// instead of glBindVertexArray(0).  In GL 4.5 core profile VAO 0
-// is not valid; using it silently breaks glVertexAttribPointer
-// and glDrawArrays produces nothing.
+// KEY CHANGES FROM v1:
+//
+// FIX A: Add glDepthMask(GL_FALSE) before drawing and restore after.
+//   Without this, 2D quads write depth=0.0 (NDC z=0 in ortho) into
+//   the depth buffer. With reversed-Z (GL_GREATER + clearDepth(0)),
+//   this corrupts the depth buffer: pixels covered by console quads
+//   get stuck at 0.0 so next frame's BSP fragments can't overwrite
+//   them (BSP frags also produce depth 0 from clearDepth, so GREATER
+//   fails). Result: ghosted geometry wherever console quads landed.
+//
+// FIX B: Remove glDisable(GL_FRAMEBUFFER_SRGB) — keep it enabled.
+//   The font atlas is GL_R8 (linear, hardware never sRGB-decodes it).
+//   Our vertex colors (kColBg, kColPrompt, etc.) are specified in
+//   linear [0,1] space. With GL_FRAMEBUFFER_SRGB enabled, OpenGL
+//   gamma-encodes the output before writing — correct behavior.
+//   Disabling it caused linear values to write directly to the sRGB
+//   framebuffer: kColBg {0.05,0.05,0.10} would appear as nearly
+//   black (13,13,26) instead of dark-navy (64,64,88), and even
+//   fully-white text would appear at ~50% visual brightness.
+//
+// FIX C: Query and restore GL_BLEND_SRC_RGB / GL_BLEND_DST_RGB
+//   (not _ALPHA variants) to correctly restore separate blend funcs.
 // ============================================================
 void Text2D::flush()
 {
     if (s_vertexCount == 0) return;
 
-    // ---- Save relevant GL state ----
+    // ---- Save GL state ----
     GLint prevProg    = 0; glGetIntegerv(GL_CURRENT_PROGRAM,      &prevProg);
     GLint prevVAO     = 0; glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
     GLint prevVBO     = 0; glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVBO);
     GLint prevTexUnit = 0; glGetIntegerv(GL_ACTIVE_TEXTURE,       &prevTexUnit);
-    GLint prevTex2D   = 0;
+
+    GLint prevTex2D = 0;
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
 
     GLboolean prevDepth  = glIsEnabled(GL_DEPTH_TEST);
     GLboolean prevCull   = glIsEnabled(GL_CULL_FACE);
     GLboolean prevBlend  = glIsEnabled(GL_BLEND);
-    GLboolean prevSRGB   = glIsEnabled(GL_FRAMEBUFFER_SRGB);
+    // FIX A: save depth mask
+    GLboolean prevDepthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
 
-    GLint prevBlendSrc = 0, prevBlendDst = 0;
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrc);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDst);
+    // FIX C: save full blend function (RGB components, not just alpha)
+    GLint prevBlendSrcRGB = 0, prevBlendDstRGB = 0;
+    GLint prevBlendSrcA   = 0, prevBlendDstA   = 0;
+    glGetIntegerv(GL_BLEND_SRC_RGB, &prevBlendSrcRGB);
+    glGetIntegerv(GL_BLEND_DST_RGB, &prevBlendDstRGB);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcA);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstA);
+
+    // FIX B: do NOT query/touch GL_FRAMEBUFFER_SRGB — keep it as-is.
+    // The atlas is GL_R8 (linear), vertex colors are linear-space floats.
+    // GL_FRAMEBUFFER_SRGB should remain ENABLED so the hardware correctly
+    // gamma-encodes our linear color output when writing to the sRGB fb.
+
+    // FIX D: save glClipControl state — BSP uses (LOWER_LEFT, ZERO_TO_ONE)
+    // for reversed-Z.  Text2D's vertex shader flips Y ("ndc.y = -ndc.y")
+    // assuming top-left screen space.  Without restoring clip control the
+    // BSP renders upside-down or clipped on the next frame.
+    GLint prevClipOrigin = 0, prevClipDepth = 0;
+    glGetIntegerv(GL_CLIP_ORIGIN,      &prevClipOrigin);
+    glGetIntegerv(GL_CLIP_DEPTH_MODE,  &prevClipDepth);
+
+    // FIX D: save depth func — BSP uses GL_GREATER for reversed-Z.
+    GLint prevDepthFunc = 0;
+    glGetIntegerv(GL_DEPTH_FUNC, &prevDepthFunc);
 
     // ---- Set up 2D overlay state ----
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
-    glDisable(GL_FRAMEBUFFER_SRGB);   // font texture is already linear
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    // FIX A: disable depth writes — 2D quads must not corrupt the depth buffer
+    glDepthMask(GL_FALSE);
+    // FIX D: override depth func to ALWAYS during flush (reversed-Z BSP uses GREATER)
+    // so that even if depth test is somehow enabled later, 2D quads always pass.
+    glDepthFunc(GL_ALWAYS);
 
     // ---- Bind shader ----
     glUseProgram(s_prog);
@@ -499,30 +558,40 @@ void Text2D::flush()
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fontTex);
 
-    // ---- Upload vertex data ----
-    // FIX 2: Bind our dedicated VAO. Attribs were already configured in init().
+    // ---- Upload vertex data and draw ----
     glBindVertexArray(s_vao);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)),
                     s_vbuf);
-
-    // ---- Draw ----
     glDrawArrays(GL_TRIANGLES, 0, s_vertexCount);
 
     // ---- Restore GL state ----
     glBindBuffer(GL_ARRAY_BUFFER, prevVBO);
     glBindVertexArray(prevVAO);
+
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, prevTex2D);
     glActiveTexture(prevTexUnit);
+
     glUseProgram(prevProg);
+
+    // FIX A: restore depth mask before re-enabling depth test
+    glDepthMask(prevDepthMask);
 
     if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     if (prevCull)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
     if (prevBlend) glEnable(GL_BLEND);      else glDisable(GL_BLEND);
-    if (prevSRGB)  glEnable(GL_FRAMEBUFFER_SRGB);
-    glBlendFunc(prevBlendSrc, prevBlendDst);
+
+    // FIX C: restore full blend function (not just alpha components)
+    glBlendFuncSeparate(prevBlendSrcRGB, prevBlendDstRGB,
+                        prevBlendSrcA,   prevBlendDstA);
+
+    // FIX B: GL_FRAMEBUFFER_SRGB is not touched — no restore needed.
+
+    // FIX D: restore glClipControl and glDepthFunc to BSP state
+    glClipControl((GLenum)prevClipOrigin, (GLenum)prevClipDepth);
+    glDepthFunc(prevDepthFunc);
 
     s_vertexCount = 0;
 }
