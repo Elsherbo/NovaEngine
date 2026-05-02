@@ -72,6 +72,7 @@
 #include <glad/glad.h>
 #include "engine/core/cvar.h"
 #include "engine/core/console.h"
+#include "engine/core/text_2d.h"
 
 // Game-module PlayerController (compiled into nova_engine/nova_player,
 // drives the camera from physics in the engine main loop).
@@ -907,6 +908,7 @@ void main()
                 m_renderer->drawIndexed(m_debugIndexCount, 0);
             }
         }
+
 
         // ---- Console overlay (renders on top of everything) ----
         if (m_console)

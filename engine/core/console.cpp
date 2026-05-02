@@ -76,11 +76,12 @@ static constexpr float kSlideSpeed      = 10.0f;
 //   Linear 0.25 → sRGB ~0.53
 //   Linear 1.00 → sRGB  1.00
 //
-static constexpr Vec4 kColBg       = { 0.08f, 0.08f, 0.16f, 0.88f };  // dark navy, semi-transparent
+static constexpr Vec4 kColBg       = { 0.00f, 0.00f, 0.00f, 0.80f };  // dark navy, semi-transparent
+//static constexpr Vec4 kColBg       = { 0.08f, 0.08f, 0.16f, 0.88f };  // dark navy
 static constexpr Vec4 kColBorder   = { 0.40f, 0.60f, 0.90f, 1.00f };  // steel blue
-static constexpr Vec4 kColPrompt   = { 0.35f, 1.00f, 0.40f, 1.00f };  // bright green
+static constexpr Vec4 kColPrompt   = { 1.00f, 1.00f, 1.00f, 1.00f };
+static constexpr Vec4 kColOutput   = { 1.00f, 1.00f, 1.00f, 1.00f };
 static constexpr Vec4 kColCommand  = { 0.35f, 1.00f, 0.40f, 1.00f };  // echoed command (same as prompt)
-static constexpr Vec4 kColOutput   = { 0.85f, 0.85f, 0.90f, 1.00f };  // light gray
 static constexpr Vec4 kColError    = { 1.00f, 0.35f, 0.30f, 1.00f };  // red
 static constexpr Vec4 kColWarn     = { 1.00f, 0.82f, 0.25f, 1.00f };  // amber
 static constexpr Vec4 kColDim      = { 0.50f, 0.50f, 0.55f, 1.00f };  // dimmed old history
@@ -375,7 +376,7 @@ void Console::render(int screenW, int screenH)
         std::string after  = m_inputBuf.substr((size_t)m_inputPos);
         Text2D::drawString(inputX, inputY, before.c_str(), kColPrompt);
         int afterX = inputX + Text2D::stringWidth(before.c_str());
-        Text2D::drawString(afterX + 8, inputY, after.c_str(), kColPrompt);
+        Text2D::drawString(afterX, inputY, after.c_str(), kColPrompt);
     }
 
     m_blinkAccum += dt;

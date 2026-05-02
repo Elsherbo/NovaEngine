@@ -275,22 +275,22 @@ void main()
 )GLSL";
 
 static const char* kFS2D = R"GLSL(
-#version 450 core
-
-in vec2  vUV;
-in vec4  vColor;
-
-uniform sampler2D uFontTex;
-
-out vec4 fragColor;
-
-void main()
-{
-    float mask = texture(uFontTex, vUV).r;
-    if (mask < 0.1) discard;
-    fragColor = vec4(vColor.rgb, vColor.a * mask);
-}
-)GLSL";
+    #version 450 core
+    
+    in vec2  vUV;
+    in vec4  vColor;
+    
+    uniform sampler2D uFontTex;
+    
+    out vec4 fragColor;
+    
+    void main()
+    {
+        float mask = texture(uFontTex, vUV).r;
+        if (mask < 0.1) discard;
+        fragColor = vec4(vColor.rgb, vColor.a * mask);
+    }
+    )GLSL";
 
 static uint32_t compileProg(const char* vs, const char* fs)
 {
@@ -343,10 +343,21 @@ void Text2D::init()
 
     buildAtlas();
 
+    // Upload as RGBA8 — replicate R8 into all 4 channels for driver
+    // compatibility.  Some GL drivers (MinGW/ANGLE, certain Intel GPUs)
+    // return 0 when sampling GL_R8 in a fragment shader.
+    uint8_t atlasRGBA[128 * 128 * 4];
+    for (int i = 0; i < 128 * 128; ++i) {
+        atlasRGBA[i * 4 + 0] = s_atlas[i];
+        atlasRGBA[i * 4 + 1] = s_atlas[i];
+        atlasRGBA[i * 4 + 2] = s_atlas[i];
+        atlasRGBA[i * 4 + 3] = s_atlas[i];
+    }
+
     glGenTextures(1, &s_fontTex);
     glBindTexture(GL_TEXTURE_2D, s_fontTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, 128, 128, 0,
-                 GL_RED, GL_UNSIGNED_BYTE, s_atlas);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 128, 128, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, atlasRGBA);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -524,10 +535,43 @@ void Text2D::flushFill()
 {
     if (s_vertexCount == 0) return;
 
-    // Save the current program so we can restore it
+    // ---- Save GL state (same as flush()) ----
     GLint prevProg = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
 
+    GLboolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean prevCull  = glIsEnabled(GL_CULL_FACE);
+    GLboolean prevBlend = glIsEnabled(GL_BLEND);
+
+    GLboolean prevDepthMask = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
+
+    GLint prevBlendSrcRGB = 0, prevBlendDstRGB = 0;
+    GLint prevBlendSrcA   = 0, prevBlendDstA   = 0;
+    glGetIntegerv(GL_BLEND_SRC_RGB,   &prevBlendSrcRGB);
+    glGetIntegerv(GL_BLEND_DST_RGB,   &prevBlendDstRGB);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &prevBlendSrcA);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &prevBlendDstA);
+
+    GLint prevDepthFunc = 0;
+    glGetIntegerv(GL_DEPTH_FUNC, &prevDepthFunc);
+
+    GLint prevClipOrigin = 0, prevClipDepth = 0;
+    glGetIntegerv(GL_CLIP_ORIGIN,     &prevClipOrigin);
+    glGetIntegerv(GL_CLIP_DEPTH_MODE, &prevClipDepth);
+
+    GLint prevVAO = 0; glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVAO);
+    GLint prevVBO = 0; glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVBO);
+
+    // ---- Set up 2D overlay state ----
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    glDepthFunc(GL_ALWAYS);
+
+    // ---- Draw ----
     glUseProgram(s_fillProg);
     if (s_fillScreenSizeLoc >= 0)
         glUniform2f(s_fillScreenSizeLoc, (float)s_screenW, (float)s_screenH);
@@ -535,10 +579,25 @@ void Text2D::flushFill()
     glBindVertexArray(s_vao);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0,
-                    (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)), s_vbuf);
+                    (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)),
+                    s_vbuf);
     glDrawArrays(GL_TRIANGLES, 0, s_vertexCount);
 
+    // ---- Restore GL state ----
+    glBindBuffer(GL_ARRAY_BUFFER, prevVBO);
+    glBindVertexArray(prevVAO);
     glUseProgram(prevProg);
+
+    glDepthMask(prevDepthMask);
+    glDepthFunc(prevDepthFunc);
+    glClipControl((GLenum)prevClipOrigin, (GLenum)prevClipDepth);
+
+    if (prevDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prevCull)  glEnable(GL_CULL_FACE);  else glDisable(GL_CULL_FACE);
+    if (prevBlend) glEnable(GL_BLEND);      else glDisable(GL_BLEND);
+    glBlendFuncSeparate(prevBlendSrcRGB, prevBlendDstRGB,
+                        prevBlendSrcA,   prevBlendDstA);
+
     s_vertexCount = 0;
 }
 
@@ -625,12 +684,12 @@ void Text2D::flush()
     // so that even if depth test is somehow enabled later, 2D quads always pass.
     glDepthFunc(GL_ALWAYS);
 
-    // ---- Bind shader ----
-    glUseProgram(s_prog);
-    if (s_uScreenSizeLoc >= 0)
-        glUniform2f(s_uScreenSizeLoc, (float)s_screenW, (float)s_screenH);
-    if (s_uFontTexLoc >= 0)
-        glUniform1i(s_uFontTexLoc, 0);
+     // ---- Bind shader & uniforms (always fresh — no cached loc bugs) ----
+     glUseProgram(s_prog);
+     GLint locScreen = glGetUniformLocation(s_prog, "uScreenSize");
+     GLint locTex    = glGetUniformLocation(s_prog, "uFontTex");
+     if (locScreen >= 0) glUniform2f(locScreen, (float)s_screenW, (float)s_screenH);
+     if (locTex    >= 0) glUniform1i(locTex, 0);
 
     // ---- Bind font texture to slot 0 ----
     glActiveTexture(GL_TEXTURE0);
