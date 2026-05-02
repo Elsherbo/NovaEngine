@@ -1,7 +1,14 @@
 // ============================================================
 // FILE:    engine/core/console.h
 // MODULE:  Core > Console
-// VERSION: v7 — Professional Q2/Source Engine style
+// VERSION: v8 — Retro Shooter Aesthetic (Q2/Source Engine style)
+//
+// Design language: dark military-industrial terminal
+//   - Deep charcoal/black backgrounds with slight blue tint
+//   - Amber accent as primary action color (classic CRT warmth)
+//   - High-contrast monospaced text with drop shadows
+//   - Subtle scanline dividers, gradient accents on header
+//   - Q2-style "] " prompt, Source-style slide animation
 // ============================================================
 #pragma once
 
@@ -17,6 +24,23 @@ namespace nova
 {
 
 struct InputState;
+
+// ---- Color categories ----
+enum class ConColor : uint8_t {
+    Output  = 0,  // default text — warm off-white
+    Command = 1,  // echoed commands — amber
+    Error   = 2,  // errors — red-orange
+    Warn    = 3,  // warnings — yellow
+    System  = 4,  // engine messages — cyan
+    Success = 5,  // success — green
+    Dim     = 6,  // old lines / hints — dark gray
+    Accent  = 7,  // highlighted / important — bright amber
+};
+
+struct ConLine {
+    std::string text;
+    ConColor    color = ConColor::Output;
+};
 
 class Console
 {
@@ -35,26 +59,9 @@ public:
     void close()         { m_open = false; m_inputBuf.clear(); m_historyIdx = -1; }
     void toggle()        { m_open ? close() : open(); }
 
-    // ---- 6 semantic color categories (up from 5) ----
-    enum class ConColor {
-        Output,   // light gray — general info
-        Command,  // green — echoed commands
-        Error,    // red — errors
-        Warn,     // amber — warnings
-        System,   // blue — engine/system messages
-        Success,  // teal — success confirmations
-        Dim,      // dimmed — old scrollback hint
-    };
-
-    struct ConLine {
-        std::string text;
-        ConColor    color = ConColor::Output;
-    };
-
+    // Add a raw line with given color
     void addLine(const std::string& line, ConColor color = ConColor::Output);
-
-    // Strip Logger timestamp prefix "[YYYY-MM-DD HH:MM:SS] [LEVEL] "
-    // and classify by level before adding to scrollback.
+    // Add a Logger message (strips timestamp, classifies by level)
     void addLogLine(LogLevel level, const char* rawMsg);
 
 private:
@@ -73,7 +80,7 @@ private:
     int m_historyCount = 0;
     int m_historyIdx   = -1;
 
-    static constexpr int kMaxLines = 1024;  // doubled
+    static constexpr int kMaxLines = 2048;
     std::vector<ConLine> m_scrollback;
     int m_scroll = 0;
 
