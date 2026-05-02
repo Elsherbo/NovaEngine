@@ -45,8 +45,8 @@ public:
     static void drawString(int x, int y, const char* text, Vec4 color);
 
     // ---- Font metrics ----
-    static int charWidth()  { return 8; }
-    static int charHeight() { return 8; }
+    static int charWidth()  { return 16; }
+    static int charHeight() { return 16; }
     static int stringWidth(const char* text);
 
 private:

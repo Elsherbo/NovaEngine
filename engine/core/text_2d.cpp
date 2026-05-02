@@ -73,6 +73,14 @@
 
 namespace nova
 {
+// ---- DEBUG: dump all pending GL errors to stderr ----
+static void dumpGLErrors(const char* where)
+{
+    GLenum e;
+    while ((e = glGetError()) != GL_NO_ERROR)
+        fprintf(stderr, "GL ERROR in %s: 0x%04X\n", where, e);
+}
+
 
 // ---- Static storage ----
 uint32_t Text2D::s_fontTex    = 0;
@@ -332,6 +340,7 @@ void Text2D::init()
 {
     if (s_initialized) return;
     s_initialized = true;
+    fprintf(stderr, "[Text2D::init] building font atlas and GL resources\n");
 
     // Save current VAO so we don't corrupt the global VAO that
     // BSP relies on.  In GL 4.5 core profile, VAO 0 is invalid —
@@ -497,7 +506,7 @@ void Text2D::drawChar(int x, int y, int charCode, Vec4 color)
     float u1 = (gx * 8 + 7.5f) / 128.0f;
     float v1 = (gy * 8 + 7.5f) / 128.0f;
 
-    emitQuad((float)x, (float)y, 8.0f, 8.0f,
+    emitQuad((float)x, (float)y, 16.0f, 16.0f,
              u0, v0, u1, v1,
              color.x, color.y, color.z, color.w);
 }
@@ -581,7 +590,9 @@ void Text2D::flushFill()
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)),
                     s_vbuf);
+    // fprintf(stderr, "[Text2D::flushFill] drawing %d verts, fillProg=%u vao=%u\n", s_vertexCount, s_fillProg, s_vao);
     glDrawArrays(GL_TRIANGLES, 0, s_vertexCount);
+    dumpGLErrors("flushFill::glDrawArrays");
 
     // ---- Restore GL state ----
     glBindBuffer(GL_ARRAY_BUFFER, prevVBO);
@@ -688,8 +699,10 @@ void Text2D::flush()
      glUseProgram(s_prog);
      GLint locScreen = glGetUniformLocation(s_prog, "uScreenSize");
      GLint locTex    = glGetUniformLocation(s_prog, "uFontTex");
+    //  fprintf(stderr, "[Text2D::flush] locScreen=%d locTex=%d screenW=%d screenH=%d\n", locScreen, locTex, s_screenW, s_screenH);
      if (locScreen >= 0) glUniform2f(locScreen, (float)s_screenW, (float)s_screenH);
      if (locTex    >= 0) glUniform1i(locTex, 0);
+     dumpGLErrors("flush::uniforms");
 
     // ---- Bind font texture to slot 0 ----
     glActiveTexture(GL_TEXTURE0);
@@ -701,7 +714,9 @@ void Text2D::flush()
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)),
                     s_vbuf);
+    // fprintf(stderr, "[Text2D::flush] drawing %d verts, prog=%u vao=%u vbo=%u tex=%u screenW=%d screenH=%d\n", s_vertexCount, s_prog, s_vao, s_vbo, s_fontTex, s_screenW, s_screenH);
     glDrawArrays(GL_TRIANGLES, 0, s_vertexCount);
+    dumpGLErrors("flush::glDrawArrays");
 
     // ---- Restore GL state ----
     glBindBuffer(GL_ARRAY_BUFFER, prevVBO);

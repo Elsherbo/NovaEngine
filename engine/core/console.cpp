@@ -59,10 +59,10 @@ namespace nova
 {
 
 // ---- Console appearance constants ----
-static constexpr int   kConsoleHeightPx = 240;
-static constexpr int   kPadX            = 8;
-static constexpr int   kPadY            = 6;
-static constexpr int   kInputBarH       = 18;
+static constexpr int   kConsoleHeightPx = 360;
+static constexpr int   kPadX            = 12;
+static constexpr int   kPadY            = 8;
+static constexpr int   kInputBarH       = 24;
 static constexpr float kSlideSpeed      = 10.0f;
 
 // ---- Colors (sRGB-space values, for use with GL_FRAMEBUFFER_SRGB enabled) ----
@@ -99,7 +99,7 @@ void Console::submit(const char* line)
 {
     if (!line || !*line) return;
 
-    m_scrollback.push_back(std::string("> ") + line);
+    m_scrollback.push_back(ConLine{ std::string("> ") + line, ConColor::Command });
     if ((int)m_scrollback.size() > kMaxLines)
         m_scrollback.erase(m_scrollback.begin());
 
@@ -120,9 +120,9 @@ void Console::submit(const char* line)
 // ============================================================
 // addLine
 // ============================================================
-void Console::addLine(const std::string& line)
+void Console::addLine(const std::string& line, ConColor color)
 {
-    m_scrollback.push_back(line);
+    m_scrollback.push_back(ConLine{ line, color });
     if ((int)m_scrollback.size() > kMaxLines)
         m_scrollback.erase(m_scrollback.begin());
 }
@@ -326,26 +326,27 @@ void Console::render(int screenW, int screenH)
     if (startIdx < 0) startIdx = 0;
     if (endIdx   > total) endIdx = total;
 
+    static const Vec4 kColorTable[] = {
+        kColOutput,   // ConColor::Output
+        kColCommand,  // ConColor::Command
+        kColError,    // ConColor::Error
+        kColWarn,     // ConColor::Warn
+        kColDim,      // ConColor::Dim
+    };
+
     for (int i = startIdx; i < endIdx; ++i)
     {
-        const std::string& line = m_scrollback[i];
+        const ConLine& entry = m_scrollback[i];
         int lineY = textAreaTop + (i - startIdx) * lineH;
         if (lineY + ch > textAreaBot) break;
 
-        Vec4 col = kColOutput;
-        if (line.size() >= 2 && line[0] == '>' && line[1] == ' ')
-            col = kColCommand;
-        else if (line.size() >= 6 && line.substr(0, 6) == "ERROR:")
-            col = kColError;
-        else if (line.size() >= 5 && line.substr(0, 5) == "WARN:")
-            col = kColWarn;
-        else if (i < endIdx - 8)
-            col = kColDim;
+        Vec4 col = kColorTable[(int)entry.color];
 
         const int maxChars = (screenW - kPadX * 2) / Text2D::charWidth();
-        std::string display = (line.size() > (size_t)maxChars)
-                              ? line.substr(0, maxChars - 2) + ".."
-                              : line;
+        const std::string& text = entry.text;
+        std::string display = (text.size() > (size_t)maxChars)
+                              ? text.substr(0, maxChars - 2) + ".."
+                              : text;
 
         Text2D::drawString(kPadX, lineY, display.c_str(), col);
     }

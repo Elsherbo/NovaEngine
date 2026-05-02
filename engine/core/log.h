@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstddef>
+#include <functional>
 
 namespace nova
 {
@@ -32,6 +33,11 @@ public:
     void setFile(FILE *file);
     void setFilePath(const char *path);
 
+    // Optional hook called for every message that passes the level filter.
+    // Set once after the console is created; pass nullptr to clear.
+    using Hook = std::function<void(LogLevel, const char*)>;
+    void setHook(Hook hook) { m_hook = std::move(hook); }
+
     void debug(const char *fmt, ...);
     void info(const char *fmt, ...);
     void warn(const char *fmt, ...);
@@ -51,6 +57,7 @@ private:
     LogLevel m_level = LogLevel::Debug;
     FILE *m_file = nullptr;
     bool m_ownsFile = false;
+    Hook m_hook;
 };
 
 #define LOG_DEBUG(msg) ::nova::Logger::instance().debug(msg)

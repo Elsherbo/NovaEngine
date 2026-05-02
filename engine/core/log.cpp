@@ -138,6 +138,9 @@ void Logger::log(LogLevel level, const char *msg)
     writePrefix(level, levelStr);
     fprintf(m_file, "%s\n", msg);
     fflush(m_file);
+
+    if (m_hook)
+        m_hook(level, msg);
 }
 
 } // namespace nova

@@ -38,8 +38,14 @@ public:
     void close()        { m_open = false; m_inputBuf.clear(); m_historyIdx = -1; }
     void toggle()       { m_open ? close() : open(); }
 
+    enum class ConColor { Output, Command, Error, Warn, Dim };
+    struct ConLine {
+        std::string text;
+        ConColor    color = ConColor::Output;
+    };
+
     // Add a line to scrollback from outside (e.g. Logger hook)
-    void addLine(const std::string& line);
+    void addLine(const std::string& line, ConColor color = ConColor::Output);
 
 private:
     void submit(const char* line);
@@ -60,7 +66,8 @@ private:
 
     // Scrollback buffer (previous command outputs)
     static constexpr int kMaxLines = 512;
-    std::vector<std::string> m_scrollback;
+
+    std::vector<ConLine> m_scrollback;  // was vector<string>
 
     // Display scroll position (0 = bottom/most recent)
     int m_scroll = 0;

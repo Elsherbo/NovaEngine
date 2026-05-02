@@ -325,6 +325,9 @@ void main()
             return false;
         }
 
+        // ---- Text2D ----
+        Text2D::init();
+
         // ---- AssetFS ----
         // Assets are mounted from bspDir/gameDir in step below
 
@@ -387,6 +390,14 @@ void main()
  
         // ---- Console ----
         m_console = new Console();
+        
+        Logger::instance().setHook([this](LogLevel level, const char* msg) {
+            if (!m_console) return;
+            Console::ConColor col = Console::ConColor::Output;
+            if (level == LogLevel::Warn)  col = Console::ConColor::Warn;
+            if (level == LogLevel::Error) col = Console::ConColor::Error;
+            m_console->addLine(msg, col);
+        });
 
         m_console->setMouseGrabCallback([this](bool grab)
         {
@@ -404,7 +415,10 @@ void main()
                 SDL_SetWindowRelativeMouseMode(win, false);
             }
         });
-
+        
+        // Also after m_console is set up, seed it with some startup lines:
+        m_console->addLine("Nova Engine ready. Type 'help' for commands.", Console::ConColor::Output);
+        m_console->addLine("Press ~ to open/close console.", Console::ConColor::Dim);
 
         // ---- PlayerController ----
         m_playerCtrl = new PlayerController();
@@ -683,9 +697,10 @@ void main()
                 m_renderer->destroySampler(m_whiteSampler);
         }
 
+        Logger::instance().setHook(nullptr);
         delete m_console;
         m_console = nullptr;
-
+        
         delete m_playerCtrl;
         m_playerCtrl = nullptr;
 
