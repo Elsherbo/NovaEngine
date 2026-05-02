@@ -393,10 +393,7 @@ void main()
         
         Logger::instance().setHook([this](LogLevel level, const char* msg) {
             if (!m_console) return;
-            Console::ConColor col = Console::ConColor::Output;
-            if (level == LogLevel::Warn)  col = Console::ConColor::Warn;
-            if (level == LogLevel::Error) col = Console::ConColor::Error;
-            m_console->addLine(msg, col);
+            m_console->addLogLine(level, msg);
         });
 
         m_console->setMouseGrabCallback([this](bool grab)
@@ -700,7 +697,7 @@ void main()
         Logger::instance().setHook(nullptr);
         delete m_console;
         m_console = nullptr;
-        
+
         delete m_playerCtrl;
         m_playerCtrl = nullptr;
 

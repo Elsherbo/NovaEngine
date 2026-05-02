@@ -391,8 +391,8 @@ void Text2D::init()
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
 
     glBufferData(GL_ARRAY_BUFFER,
-                 kMaxQuads * kFloatsPerQuad * sizeof(float),
-                 nullptr, GL_STREAM_DRAW);
+        kMaxQuads * kFloatsPerQuad * sizeof(float),
+        nullptr, GL_STREAM_DRAW);
 
     const GLsizei stride = kFloatsPerVertex * sizeof(float);
     glEnableVertexAttribArray(0);
@@ -523,7 +523,7 @@ void Text2D::drawString(int x, int y, const char* text, Vec4 color)
         unsigned char c = (unsigned char)*text++;
         if (c >= 128) c = '?';
         drawChar(cx, y, c, color);
-        cx += 8;
+        cx += 16;   // FIXED: was 8, must match quad width
     }
 }
 
@@ -533,7 +533,7 @@ void Text2D::drawString(int x, int y, const char* text, Vec4 color)
 int Text2D::stringWidth(const char* text)
 {
     int w = 0;
-    while (text && *text++) w += 8;
+    while (text && *text++) w += 16;  // FIXED: was 8
     return w;
 }
 
