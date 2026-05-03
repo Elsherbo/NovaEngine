@@ -1,39 +1,3 @@
-// ============================================================
-// FILE:    engine/core/console.cpp
-// MODULE:  Core > Console
-// VERSION: v8 — Retro Shooter Aesthetic
-//
-// VISUAL DESIGN — "Military Terminal"
-// ─────────────────────────────────────────────────────────────
-//
-//  ┌──────────────────────────────────────────────────────────┐
-//  │  ████ NOVA ENGINE ████████████████████ v0.1.0  FPS:xx  │  ← Header (gradient, amber accent)
-//  ├──────────────────────────────────────────────────────────┤  ← 1px amber border
-//  │                                                          │
-//  │  [INFO]  Nova Engine Phase 1 initializing...            │  ← Scrollback (dim tint background)
-//  │  [INFO]  BSP loaded, spawn at (...)                     │
-//  │  [WARN]  CVar 'r_debugview' set to 1                    │
-//  │                                                   ╏     │  ← 4px scrollbar (right edge)
-//  │                                                   ╏     │
-//  ├──────────────────────────────────────────────────────────┤  ← 1px amber border
-//  │ ]  type command here_                                    │  ← Input bar (darker bg)
-//  └──────────────────────────────────────────────────────────┘
-//
-// Color palette (linear light values, sRGB framebuffer handles encode):
-//   Background:  #0A0C10  → {0.039, 0.047, 0.063, 0.93}  very dark navy-black
-//   Header bg:   #0F1318  → {0.059, 0.075, 0.094, 1.00}  slightly lighter
-//   Input bg:    #060709  → {0.024, 0.027, 0.035, 1.00}  darker than main
-//   Border:      #C87820  → {0.784, 0.471, 0.125, 0.90}  warm amber
-//   Scrollbar:   #1A1E26  → track, #C87820 → thumb
-//   Text white:  #D8D0C0  → {0.847, 0.816, 0.753, 1.00}  warm off-white (CRT)
-//   Command:     #E8940A  → {0.910, 0.580, 0.039, 1.00}  amber
-//   Error:       #E83020  → {0.910, 0.188, 0.125, 1.00}  red-orange
-//   Warn:        #E8C020  → {0.910, 0.753, 0.125, 1.00}  yellow
-//   System:      #20C8C8  → {0.125, 0.784, 0.784, 1.00}  cyan
-//   Success:     #40D840  → {0.251, 0.847, 0.251, 1.00}  green
-//   Dim:         #484440  → {0.282, 0.267, 0.251, 1.00}  warm dark gray
-// ============================================================
-
 #include "engine/core/console.h"
 #include "engine/core/text_2d.h"
 #include "engine/core/cvar.h"
@@ -50,76 +14,53 @@
 namespace nova
 {
 
-// ============================================================
-// Layout constants
-// ============================================================
-static constexpr int   kConH        = 420;   // console open height (px)
-static constexpr int   kHeaderH     = 24;    // title bar height
-static constexpr int   kInputH      = 30;    // input bar height
-static constexpr int   kPadX        = 10;    // left/right text padding
-static constexpr int   kPadY        = 5;     // top/bottom text padding within text area
-static constexpr int   kScrollW     = 5;     // scrollbar width
-static constexpr int   kScrollGap   = 3;     // gap between text and scrollbar
-static constexpr float kSlideSpeed  = 14.0f; // slide-in speed multiplier
+static constexpr int   kConH        = 420;
+static constexpr int   kHeaderH     = 24;
+static constexpr int   kInputH      = 30;
+static constexpr int   kPadX        = 10;
+static constexpr int   kPadY        = 5;
+static constexpr int   kScrollW     = 5;
+static constexpr int   kScrollGap   = 3;
+static constexpr float kSlideSpeed  = 14.0f;
 
-// ============================================================
-// Color palette — all linear values
-// ============================================================
+static constexpr Vec4 kBgMain    = { 0.039f, 0.047f, 0.063f, 0.93f };
+static constexpr Vec4 kBgHeader  = { 0.059f, 0.075f, 0.094f, 1.00f };
+static constexpr Vec4 kBgHeaderR = { 0.094f, 0.063f, 0.020f, 1.00f };
+static constexpr Vec4 kBgInput   = { 0.020f, 0.024f, 0.031f, 1.00f };
+static constexpr Vec4 kBgScanL   = { 0.000f, 0.000f, 0.000f, 0.06f };
+static constexpr Vec4 kBgScanD   = { 0.000f, 0.000f, 0.000f, 0.00f };
 
-// Backgrounds
-static constexpr Vec4 kBgMain    = { 0.039f, 0.047f, 0.063f, 0.93f }; // very dark navy-black
-static constexpr Vec4 kBgHeader  = { 0.059f, 0.075f, 0.094f, 1.00f }; // slightly lighter
-static constexpr Vec4 kBgHeaderR = { 0.094f, 0.063f, 0.020f, 1.00f }; // gradient right (amber tint)
-static constexpr Vec4 kBgInput   = { 0.020f, 0.024f, 0.031f, 1.00f }; // darkest — input area
-static constexpr Vec4 kBgScanL   = { 0.000f, 0.000f, 0.000f, 0.06f }; // scanline even rows
-static constexpr Vec4 kBgScanD   = { 0.000f, 0.000f, 0.000f, 0.00f }; // scanline odd rows (transparent)
+static constexpr Vec4 kBorderAmber = { 0.784f, 0.471f, 0.125f, 0.90f };
+static constexpr Vec4 kBorderDim   = { 0.200f, 0.220f, 0.260f, 0.60f };
 
-// Borders / decorators
-static constexpr Vec4 kBorderAmber = { 0.784f, 0.471f, 0.125f, 0.90f }; // amber accent border
-static constexpr Vec4 kBorderDim   = { 0.200f, 0.220f, 0.260f, 0.60f }; // dim blue-gray divider
-
-// Scrollbar
 static constexpr Vec4 kScrollTrack = { 0.067f, 0.078f, 0.098f, 1.00f };
-static constexpr Vec4 kScrollThumb = { 0.620f, 0.373f, 0.098f, 0.90f }; // amber thumb
+static constexpr Vec4 kScrollThumb = { 0.620f, 0.373f, 0.098f, 0.90f };
 
-// Text colors by semantic category
-// These are LINEAR values (sRGB framebuffer encodes automatically)
 static constexpr Vec4 kColTable[] = {
-    { 0.847f, 0.816f, 0.753f, 1.00f }, // Output  — warm off-white (CRT phosphor)
-    { 0.910f, 0.580f, 0.039f, 1.00f }, // Command — amber
-    { 0.910f, 0.188f, 0.125f, 1.00f }, // Error   — red-orange
-    { 0.910f, 0.753f, 0.125f, 1.00f }, // Warn    — yellow
-    { 0.125f, 0.784f, 0.784f, 1.00f }, // System  — cyan
-    { 0.251f, 0.847f, 0.251f, 1.00f }, // Success — green
-    { 0.282f, 0.267f, 0.251f, 1.00f }, // Dim     — warm gray
-    { 1.000f, 0.720f, 0.200f, 1.00f }, // Accent  — bright amber
+    { 0.847f, 0.816f, 0.753f, 1.00f }, // Output
+    { 0.910f, 0.580f, 0.039f, 1.00f }, // Command
+    { 0.910f, 0.188f, 0.125f, 1.00f }, // Error
+    { 0.910f, 0.753f, 0.125f, 1.00f }, // Warn
+    { 0.125f, 0.784f, 0.784f, 1.00f }, // System
+    { 0.251f, 0.847f, 0.251f, 1.00f }, // Success
+    { 0.282f, 0.267f, 0.251f, 1.00f }, // Dim
+    { 1.000f, 0.720f, 0.200f, 1.00f }, // Accent
 };
 
-// Header text / prompt
-static constexpr Vec4 kColHeader  = { 0.910f, 0.580f, 0.039f, 1.00f }; // amber
-static constexpr Vec4 kColVersion = { 0.400f, 0.440f, 0.520f, 1.00f }; // cool gray
-static constexpr Vec4 kColPrompt  = { 0.910f, 0.580f, 0.039f, 1.00f }; // amber prompt
-static constexpr Vec4 kColCursor  = { 0.910f, 0.720f, 0.200f, 1.00f }; // bright amber cursor
-static constexpr Vec4 kColInput   = { 0.847f, 0.816f, 0.753f, 1.00f }; // warm white input text
-
-// Shadow for drop-shadow text
+static constexpr Vec4 kColHeader  = { 0.910f, 0.580f, 0.039f, 1.00f };
+static constexpr Vec4 kColVersion = { 0.400f, 0.440f, 0.520f, 1.00f };
+static constexpr Vec4 kColPrompt  = { 0.910f, 0.580f, 0.039f, 1.00f };
+static constexpr Vec4 kColCursor  = { 0.910f, 0.720f, 0.200f, 1.00f };
+static constexpr Vec4 kColInput   = { 0.847f, 0.816f, 0.753f, 1.00f };
 static constexpr Vec4 kShadow     = { 0.000f, 0.000f, 0.000f, 0.70f };
 
-// ============================================================
-// Constructor / Destructor
-// ============================================================
 Console::Console()  = default;
 Console::~Console() = default;
 
-// ============================================================
-// addLogLine — strip timestamp, classify, wrap, add
-// ============================================================
 void Console::addLogLine(LogLevel level, const char* rawMsg)
 {
     if (!rawMsg) return;
 
-    // Logger format: "[YYYY-MM-DD HH:MM:SS] [LEVEL] message"
-    // Find second "] " to skip both bracketed groups
     const char* msg = rawMsg;
     const char* p   = rawMsg;
     int brackets    = 0;
@@ -139,7 +80,6 @@ void Console::addLogLine(LogLevel level, const char* rawMsg)
         default:              col = ConColor::Output;  break;
     }
 
-    // Prefix with a short tag for scannability (Q2/Source style)
     char tagged[1100];
     switch (level) {
         case LogLevel::Warn:  snprintf(tagged, sizeof(tagged), "[WARN]  %s", msg); break;
@@ -153,9 +93,6 @@ void Console::addLogLine(LogLevel level, const char* rawMsg)
     wrapAndAdd(tagged, col, maxCols > 10 ? maxCols : 78);
 }
 
-// ============================================================
-// wrapAndAdd
-// ============================================================
 void Console::wrapAndAdd(const std::string& text, ConColor color, int maxCols)
 {
     if (text.empty()) { addLine("", color); return; }
@@ -183,9 +120,6 @@ void Console::wrapAndAdd(const std::string& text, ConColor color, int maxCols)
     }
 }
 
-// ============================================================
-// addLine
-// ============================================================
 void Console::addLine(const std::string& line, ConColor color)
 {
     m_scrollback.push_back({line, color});
@@ -193,14 +127,10 @@ void Console::addLine(const std::string& line, ConColor color)
         m_scrollback.erase(m_scrollback.begin());
 }
 
-// ============================================================
-// submit
-// ============================================================
 void Console::submit(const char* line)
 {
     if (!line || !*line) return;
 
-    // Echo with amber prompt prefix
     addLine(std::string("] ") + line, ConColor::Command);
 
     if (m_historyCount == 0 || m_history[0] != line) {
@@ -215,9 +145,6 @@ void Console::submit(const char* line)
     m_scroll = 0;
 }
 
-// ============================================================
-// handleInput
-// ============================================================
 void Console::handleInput(const InputState& cur, const InputState& prev)
 {
     const bool grave = cur.keys[SDL_SCANCODE_GRAVE];
@@ -264,8 +191,10 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
     if (cur.keys[SDL_SCANCODE_BACKSPACE] && !prev.keys[SDL_SCANCODE_BACKSPACE]) {
         if (m_inputPos > 0) { m_inputBuf.erase(m_inputPos - 1, 1); --m_inputPos; } return;
     }
+    // FIX: split onto two lines to avoid -Wmisleading-indentation error
     if (cur.keys[SDL_SCANCODE_DELETE] && !prev.keys[SDL_SCANCODE_DELETE]) {
-        if (m_inputPos < (int)m_inputBuf.size()) m_inputBuf.erase(m_inputPos, 1); return;
+        if (m_inputPos < (int)m_inputBuf.size()) m_inputBuf.erase(m_inputPos, 1);
+        return;
     }
     if (cur.keys[SDL_SCANCODE_HOME]  && !prev.keys[SDL_SCANCODE_HOME])  { m_inputPos = 0; return; }
     if (cur.keys[SDL_SCANCODE_END]   && !prev.keys[SDL_SCANCODE_END])   { m_inputPos = (int)m_inputBuf.size(); return; }
@@ -307,12 +236,8 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
     }
 }
 
-// ============================================================
-// render
-// ============================================================
 void Console::render(int screenW, int screenH)
 {
-    // ---- Slide animation ----
     static uint64_t s_lastTime = 0;
     uint64_t now = SDL_GetPerformanceCounter();
     float dt = (s_lastTime == 0)
@@ -330,7 +255,6 @@ void Console::render(int screenW, int screenH)
 
     if (m_slideT <= 0.001f) return;
 
-    // ---- Scaled dimensions ----
     const int consoleH = (int)(kConH * m_slideT);
     const int headerH  = (int)(kHeaderH * m_slideT);
     const int inputY   = consoleH - kInputH;
@@ -338,47 +262,29 @@ void Console::render(int screenW, int screenH)
     Text2D::init();
     Text2D::begin(screenW, screenH);
 
-    // ================================================================
-    // 1.  MAIN BACKGROUND
-    // ================================================================
     Text2D::drawFill(0, 0, screenW, consoleH, kBgMain);
 
-    // ================================================================
-    // 2.  SCANLINES (subtle alternating rows — CRT effect)
-    //     Every even row gets a very faint darkening overlay.
-    //     Only visible when m_slideT is near 1 to avoid jitter.
-    // ================================================================
     if (m_slideT > 0.85f)
     {
         const int scanStart = kHeaderH + 1;
         const int scanEnd   = inputY;
-        // Draw every 2nd scanline as a 1px dark strip
         for (int sy = scanStart; sy < scanEnd; sy += 2)
             Text2D::drawFill(0, sy, screenW - kScrollW - kScrollGap, 1, kBgScanL);
     }
 
-    // ================================================================
-    // 3.  HEADER BAR — gradient left (dark navy) → right (amber tint)
-    // ================================================================
     if (headerH > 0)
     {
         Text2D::drawFillGradientH(0, 0, screenW, headerH, kBgHeader, kBgHeaderR);
-
-        // Bottom border of header — 2px amber line
         Text2D::drawFill(0, headerH, screenW, 2, kBorderAmber);
 
-        // Header text: "NOVA ENGINE" left-aligned with padding
         if (m_slideT > 0.6f)
         {
             const int ch  = Text2D::charHeight();
             const int ty  = (headerH - ch) / 2;
             if (ty >= 0 && ty + ch <= headerH)
             {
-                // Draw "NOVA ENGINE" as shadow + text
                 Text2D::drawStringShadow(kPadX, ty, "NOVA ENGINE",
                                          kColHeader, kShadow, 1, 1);
-
-                // Right side: version string in dim color
                 const char* ver = "v0.1.0  |  OpenGL 4.5";
                 int verW = Text2D::stringWidth(ver);
                 Text2D::drawString(screenW - verW - kPadX, ty, ver, kColVersion);
@@ -386,25 +292,16 @@ void Console::render(int screenW, int screenH)
         }
     }
 
-    // ================================================================
-    // 4.  INPUT BAR
-    // ================================================================
-    // Background
     Text2D::drawFill(0, inputY, screenW, kInputH, kBgInput);
-    // Top border — 1px amber
     Text2D::drawFill(0, inputY, screenW, 1, kBorderAmber);
-    // Bottom edge — 2px amber (console bottom border)
     Text2D::drawFill(0, consoleH - 2, screenW, 2, kBorderAmber);
 
-    // ================================================================
-    // 5.  SCROLLBACK TEXT AREA
-    // ================================================================
     const int cw    = Text2D::charWidth();
     const int ch    = Text2D::charHeight();
     const int lineH = ch + 2;
 
-    const int textTop = headerH + 2 + kPadY;  // below header border
-    const int textBot = inputY - kPadY;        // above input border
+    const int textTop = headerH + 2 + kPadY;
+    const int textBot = inputY - kPadY;
     const int textH   = textBot - textTop;
     const int maxVisible = std::max(0, textH / lineH);
 
@@ -414,7 +311,6 @@ void Console::render(int screenW, int screenH)
     if (startIdx < 0) startIdx = 0;
     if (endIdx   > total) endIdx = total;
 
-    // Calculate available width accounting for scrollbar
     const int textAreaW = screenW - kPadX * 2 - kScrollW - kScrollGap * 2;
 
     for (int i = startIdx; i < endIdx; ++i)
@@ -425,12 +321,10 @@ void Console::render(int screenW, int screenH)
 
         const Vec4& color = kColTable[(int)entry.color];
 
-        // Truncate if line is wider than the text area
         int maxChars = textAreaW / cw;
         if ((int)entry.text.size() > maxChars && maxChars > 3)
         {
             std::string trunc = entry.text.substr(0, maxChars - 1) + "~";
-            // Drop shadow for readability
             Text2D::drawString(kPadX + 1, lineY + 1, trunc.c_str(),
                                Vec4{0,0,0, color.w * 0.6f});
             Text2D::drawString(kPadX, lineY, trunc.c_str(), color);
@@ -443,21 +337,15 @@ void Console::render(int screenW, int screenH)
         }
     }
 
-    // ================================================================
-    // 6.  SCROLLBAR
-    // ================================================================
     if (total > maxVisible)
     {
         const int trackX = screenW - kScrollW - 2;
         const int trackY = textTop;
         const int trackH = textH;
 
-        // Track
         Text2D::drawFill(trackX, trackY, kScrollW, trackH, kScrollTrack);
-        // Track border left — 1px dim
         Text2D::drawFill(trackX - 1, trackY, 1, trackH, kBorderDim);
 
-        // Thumb — proportional
         float visFrac  = (float)maxVisible / (float)total;
         int   thumbH   = std::max(12, (int)(visFrac * (float)trackH));
         float scrollFrac = (total > maxVisible)
@@ -469,9 +357,6 @@ void Console::render(int screenW, int screenH)
         Text2D::drawFill(trackX, thumbY, kScrollW, thumbH, kScrollThumb);
     }
 
-    // ================================================================
-    // 7.  SCROLL INDICATOR (PageDn hint when scrolled up)
-    // ================================================================
     if (m_scroll > 0)
     {
         const char* hint = "[ SCROLL: PageUp/PageDn ]";
@@ -480,7 +365,6 @@ void Console::render(int screenW, int screenH)
         int hintY = textBot - lineH;
         if (hintY > textTop)
         {
-            // Semi-transparent dark pill background
             Text2D::drawFill(hintX - 4, hintY - 2, hintW + 8, lineH + 2,
                              Vec4{0.1f, 0.08f, 0.04f, 0.85f});
             Text2D::drawString(hintX, hintY, hint,
@@ -488,19 +372,14 @@ void Console::render(int screenW, int screenH)
         }
     }
 
-    // ================================================================
-    // 8.  INPUT LINE
-    // ================================================================
     {
         const int padV = (kInputH - ch) / 2;
         const int iy   = inputY + padV;
 
-        // "] " prompt in amber
         const char* prompt = "] ";
         Text2D::drawStringShadow(kPadX, iy, prompt, kColPrompt, kShadow, 1, 1);
         int cursorBaseX = kPadX + Text2D::stringWidth(prompt);
 
-        // Text before cursor
         if (!m_inputBuf.empty())
         {
             std::string before = m_inputBuf.substr(0, (size_t)m_inputPos);
@@ -516,7 +395,6 @@ void Console::render(int screenW, int screenH)
             Text2D::drawString(afterX, iy, after.c_str(), kColInput);
         }
 
-        // ---- Blinking block cursor ----
         m_blinkAccum += dt;
         if (m_blinkAccum > 0.50f) { m_blinkAccum = 0.f; m_cursorVis = !m_cursorVis; }
 
@@ -525,11 +403,9 @@ void Console::render(int screenW, int screenH)
             std::string before = m_inputBuf.substr(0, (size_t)m_inputPos);
             int cx = cursorBaseX + Text2D::stringWidth(before.c_str());
 
-            // Bright amber block cursor (full character cell)
             Text2D::drawFill(cx, iy, cw, ch,
                              Vec4{0.91f, 0.58f, 0.039f, 0.75f});
 
-            // If there's a character under cursor, redraw it in inverse color
             if (m_inputPos < (int)m_inputBuf.size())
             {
                 char buf[2] = { m_inputBuf[m_inputPos], '\0' };
@@ -538,9 +414,6 @@ void Console::render(int screenW, int screenH)
         }
     }
 
-    // ================================================================
-    // 9.  THIN DECORATIVE LEFT EDGE — 3px amber bar
-    // ================================================================
     Text2D::drawFillGradientH(0, headerH + 2, 3, consoleH - headerH - 2,
                                Vec4{0.784f, 0.471f, 0.125f, 0.7f},
                                Vec4{0.784f, 0.471f, 0.125f, 0.0f});

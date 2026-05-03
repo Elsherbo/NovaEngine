@@ -414,8 +414,8 @@ void main()
         });
         
         // Also after m_console is set up, seed it with some startup lines:
-        m_console->addLine("Nova Engine ready. Type 'help' for commands.", Console::ConColor::Output);
-        m_console->addLine("Press ~ to open/close console.", Console::ConColor::Dim);
+        m_console->addLine("Nova Engine ready. Type 'help' for commands.", ConColor::Output);
+        m_console->addLine("Press ~ to open/close console.", ConColor::Dim);
 
         // ---- PlayerController ----
         m_playerCtrl = new PlayerController();

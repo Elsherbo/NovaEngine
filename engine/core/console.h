@@ -1,15 +1,3 @@
-// ============================================================
-// FILE:    engine/core/console.h
-// MODULE:  Core > Console
-// VERSION: v8 — Retro Shooter Aesthetic (Q2/Source Engine style)
-//
-// Design language: dark military-industrial terminal
-//   - Deep charcoal/black backgrounds with slight blue tint
-//   - Amber accent as primary action color (classic CRT warmth)
-//   - High-contrast monospaced text with drop shadows
-//   - Subtle scanline dividers, gradient accents on header
-//   - Q2-style "] " prompt, Source-style slide animation
-// ============================================================
 #pragma once
 
 #include "engine/core/math/vec.h"
@@ -26,7 +14,9 @@ namespace nova
 struct InputState;
 
 // ---- Color categories ----
-enum class ConColor : uint8_t {
+// Note: underlying type removed — GCC 15 -Wpedantic rejects
+// "enum class X : T" in some elaborated-type-specifier contexts.
+enum class ConColor {
     Output  = 0,  // default text — warm off-white
     Command = 1,  // echoed commands — amber
     Error   = 2,  // errors — red-orange
@@ -59,9 +49,7 @@ public:
     void close()         { m_open = false; m_inputBuf.clear(); m_historyIdx = -1; }
     void toggle()        { m_open ? close() : open(); }
 
-    // Add a raw line with given color
     void addLine(const std::string& line, ConColor color = ConColor::Output);
-    // Add a Logger message (strips timestamp, classifies by level)
     void addLogLine(LogLevel level, const char* rawMsg);
 
 private:
