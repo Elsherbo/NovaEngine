@@ -43,6 +43,9 @@ struct InputState
     int mouseDeltaX = 0;
     int mouseDeltaY = 0;
     int mouseWheel  = 0;
+    bool windowResized = false;
+    int  newWindowW    = 0;
+    int  newWindowH    = 0;
 };
 
 // ---- File I/O ----

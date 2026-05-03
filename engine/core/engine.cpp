@@ -777,6 +777,15 @@ void main()
             m_running = false;
             return;
         }
+
+        // ---- Window resize ----
+        if (input.windowResized && input.newWindowW > 0 && input.newWindowH > 0)
+        {
+            m_renderer->setSwapChainSize(input.newWindowW, input.newWindowH);
+            m_camera->setAspect((float)input.newWindowW / (float)input.newWindowH);
+            // Re-bind the UBO since GL state may have been touched
+            m_renderer->bindUniformBuffer(m_uboBuffer, 0);
+        }
  
         // ---- Console input (must run first — swallows all other input) ----
         // NOTE: no early return here. prevInput is always updated at the

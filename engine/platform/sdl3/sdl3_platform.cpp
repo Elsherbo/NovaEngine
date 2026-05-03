@@ -136,6 +136,21 @@ public:
                 state.mouseWheel += e.wheel.y;
                 break;
 
+            case SDL_EVENT_WINDOW_RESIZED:
+                state.windowResized = true;
+                state.newWindowW = e.window.data1;
+                state.newWindowH = e.window.data2;
+                break;
+
+            case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+                // Also fire on HiDPI changes
+                if (!state.windowResized) {
+                    state.windowResized = true;
+                    state.newWindowW    = e.window.data1;
+                    state.newWindowH    = e.window.data2;
+                }
+                break;
+
             case SDL_EVENT_QUIT:
                 m_quitRequested = true;
                 break;
