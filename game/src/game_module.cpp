@@ -62,6 +62,8 @@ bool GameModule::init()
 // -----------------------------------------------------------------------
 void GameModule::shutdown()
 {
+    if (m_shutdownCalled) return;
+    m_shutdownCalled = true;
     GAME_INFO("GameModule: shutdown");
 }
 
@@ -71,9 +73,14 @@ void GameModule::shutdown()
 void GameModule::loadMap(IWorld* world)
 {
     if (!world) return;
-    EntityFactory::init();
-    int count = MapLoader::load(world);
-    GAME_INFO("GameModule: loadMap spawned %d entities", count);
+    m_world = world;
+    // Do NOT call MapLoader::load() here — engine already did it.
+    // Use this hook to register game-specific callbacks on spawned entities,
+    // set up game state, wire AI, etc.
+    GAME_INFO("GameModule: world loaded — wiring game logic...");
+
+    // Example: find the worldspawn and read map properties
+    // find player spawns, register think callbacks on items, etc.
 }
 
 // -----------------------------------------------------------------------

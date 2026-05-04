@@ -325,33 +325,9 @@ void main()
             return false;
         }
 
-        // ---- Load console font ----
+        // ---- Text2D init (GL objects only, font loaded after assets mount) ----
         Text2D::init();
-        {
-            // Try Q2 conchars first (256×256 with 16×16 glyphs)
-            const char* q2fonts[] = {
-                "pics/conchars.png",
-                "pics/conchars.tga",
-            };
-            bool loaded = false;
-            for (const char* fp : q2fonts)
-                if ((loaded = Text2D::tryLoadQ2Conchars(&m_assets, fp))) break;
-
-            // Fall back to generic 128×128 bitmap fonts
-            if (!loaded)
-            {
-                const char* fallbacks[] = {
-                    "pics/font.png",
-                    "pics/font.tga",
-                };
-                for (const char* fp : fallbacks)
-                    if ((loaded = Text2D::tryLoadFont(&m_assets, fp))) break;
-            }
-
-            if (!loaded)
-                fprintf(stdout, "[Text2D] using built-in IBM CP437 font\n");
-        }
-
+        
         // ---- AssetFS ----
         // Assets are mounted from bspDir/gameDir in step below
 
@@ -508,6 +484,57 @@ void main()
             {
                 log.warn("Engine: game DLL not found, running engine-only");
             }
+        }
+
+        // ---- Load console font (must be AFTER AssetFS is mounted) ----
+        // AssetFS now knows where 'assets/' is, so 'pics/conchars.png' resolves
+        // to 'assets/pics/conchars.png' correctly.
+        {
+            // Try Q2-style conchars first.
+            // Accepts any square image divisible by 16: 128, 256, 512, 1024.
+            // Top half = normal (silver) set, bottom half = alternate (gold) set.
+            // Place your file at: assets/pics/conchars.png
+            const char* q2fonts[] = {
+                "pics/conchars.png",
+                "pics/conchars.tga",
+                "pics/conchars.jpg",
+            };
+            bool loaded = false;
+            for (const char* fp : q2fonts)
+            {
+                if (Text2D::tryLoadQ2Conchars(&m_assets, fp))
+                {
+                    loaded = true;
+                    fprintf(stdout, "Text2D: loaded Q2 conchars from '%s'%s\n",
+                        fp,
+                        Text2D::hasAlternateSet()
+                            ? " (normal + alternate set)"
+                            : " (normal set only)");
+                    break;
+                }
+            }
+
+            // Fall back to generic 128x128 single-set bitmap fonts
+            if (!loaded)
+            {
+                const char* genericFonts[] = {
+                    "pics/font.png",
+                    "pics/font.tga",
+                    "fonts/default.png",
+                };
+                for (const char* fp : genericFonts)
+                {
+                    if (Text2D::tryLoadFont(&m_assets, fp))
+                    {
+                        loaded = true;
+                        fprintf(stdout, "Text2D: loaded generic font from '%s'\n", fp);
+                        break;
+                    }
+                }
+            }
+
+            if (!loaded)
+                fprintf(stdout, "Text2D: using built-in IBM CP437 8x8 font\n");
         }
 
         // ---- BSP + Physics ----

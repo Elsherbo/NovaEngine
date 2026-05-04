@@ -86,6 +86,8 @@ private:
     int m_ammo[8] = {};               // ammo types
     int m_weapons = 0;
     int m_currentWeapon = 0;
+    IWorld* m_world = nullptr;
+    bool m_shutdownCalled = false;
 };
 
 // -----------------------------------------------------------------------

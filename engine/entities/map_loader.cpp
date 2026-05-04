@@ -214,6 +214,14 @@ int MapLoader::load(IWorld* world)
     const char* lump = world->getEntityString();
     if (!lump || !*lump) return 0;
 
+    // Compile-time-only classes that consume an entity slot but serve
+    // no runtime purpose. Must be skipped before EntityFactory::spawn().
+    static const char* kSkipClasses[] = {
+        "light", "light_spot", "light_environment",
+        "light_surface", "_skybox", "func_detail",
+        nullptr
+    };
+
     int spawned = 0;
     const char* p = lump;
 
@@ -231,15 +239,27 @@ int MapLoader::load(IWorld* world)
         if (pe.count == 0) continue;
 
         // ---- Extract mandatory keys ----
-        const char* classname  = pe.get("classname");
+        const char* classname = pe.get("classname");
         if (!classname || !*classname) continue;
+
+        // ---- Skip compile-time-only entities ----
+        bool shouldSkip = false;
+        for (int si = 0; kSkipClasses[si]; ++si)
+        {
+            if (std::strcmp(classname, kSkipClasses[si]) == 0)
+            {
+                shouldSkip = true;
+                break;
+            }
+        }
+        if (shouldSkip) continue;   // <-- clean, no goto, no uninitialized ent
 
         // ---- Origin ----
         Vec3 origin{0.f, 0.f, 0.f};
         if (const char* oStr = pe.get("origin"))
             origin = EntityFactory::parseOrigin(oStr);
 
-        // ---- Spawn the entity ----
+        // ---- Spawn ----
         Entity* ent = EntityFactory::spawn(classname, origin);
         if (!ent)
         {
@@ -254,54 +274,46 @@ int MapLoader::load(IWorld* world)
             if (aStr) ent->angles = EntityFactory::parseAngles(aStr);
         }
 
-        // ---- Spawnflags → stored in flags upper 16 bits ----
+        // ---- Spawnflags ----
         if (const char* sfStr = pe.get("spawnflags"))
         {
             uint32_t sf = (uint32_t)EntityFactory::parseInt(sfStr);
             ent->flags |= (sf << 16);
         }
 
-        // ---- Health (for damage-activated doors, breakables, etc.) ----
+        // ---- Health ----
         if (const char* hStr = pe.get("health"))
             ent->health = EntityFactory::parseFloat(hStr);
 
-        // ---- target / targetname — stored in model[] temporarily ----
-        // model[0..14]  : targetname (null-terminated, max 15 chars)
-        // model[16..30] : target     (null-terminated, max 15 chars)
+        // ---- target / targetname ----
         if (const char* tnStr = pe.get("targetname"))
             std::strncpy(ent->model,      tnStr, 15);
         if (const char* tStr  = pe.get("target"))
             std::strncpy(ent->model + 16, tStr,  15);
 
-        // ---- Store remaining keys in PropertyStore (TrenchBroom custom keys) ----
+        // ---- Remaining keys → PropertyStore ----
         uint16_t entIdx = ent->handle.index();
         for (int i = 0; i < pe.count; ++i)
         {
             const char* k = pe.pairs[i].key;
-            // Skip keys we've already handled
-            if (std::strcmp(k, "classname") == 0) continue;
-            if (std::strcmp(k, "origin") == 0) continue;
-            if (std::strcmp(k, "angles") == 0) continue;
-            if (std::strcmp(k, "angle") == 0) continue;
+            if (std::strcmp(k, "classname")  == 0) continue;
+            if (std::strcmp(k, "origin")     == 0) continue;
+            if (std::strcmp(k, "angles")     == 0) continue;
+            if (std::strcmp(k, "angle")      == 0) continue;
             if (std::strcmp(k, "spawnflags") == 0) continue;
-            if (std::strcmp(k, "health") == 0) continue;
+            if (std::strcmp(k, "health")     == 0) continue;
             if (std::strcmp(k, "targetname") == 0) continue;
-            if (std::strcmp(k, "target") == 0) continue;
+            if (std::strcmp(k, "target")     == 0) continue;
             g_propertyStore.set(entIdx, k, pe.pairs[i].val);
         }
 
-        // ---- Diagnostics ----
         fprintf(stdout, "MapLoader: spawned '%s' at (%.0f, %.0f, %.0f)\n",
                 classname, origin.x, origin.y, origin.z);
-
         ++spawned;
     }
 
     fprintf(stdout, "MapLoader: %d entities spawned from BSP lump\n", spawned);
-
-    // Resolve target links now that all entities exist.
     linkTargets();
-
     return spawned;
 }
 
