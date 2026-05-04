@@ -29,12 +29,12 @@ SetupLights: 5 after jittering
 Final count: 5 lights, 0 suns in use.
 0 surface light points in use.
 map uses color: true
-lightmap size (total): 41784
+lightmap size (total): 63588
 Lighting Completed.
 
 0 switchable light styles (32 max)
 Writing test.bsp as Quake II BSP IBSP:38
-0.074s seconds elapsed
+0.061s seconds elapsed
 0 empty lightmaps
 
 

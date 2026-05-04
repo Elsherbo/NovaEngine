@@ -471,7 +471,7 @@
 "classname" "light"
 "origin" "-840 -184 248"
 "light" "300"
-"style" "1"
+"style" "0"
 }
 // entity 6
 {

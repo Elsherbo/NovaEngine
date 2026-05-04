@@ -104,8 +104,8 @@ count   lump name    byte size
       1 areaportals           8
         lightdata             0
         visdata               0
-        entdata             349
+        entdata             375
 
-0.024s seconds elapsed
+0.072s seconds elapsed
 
 
