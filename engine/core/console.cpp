@@ -59,9 +59,9 @@ namespace nova
 // ---------------------------------------------------------------------------
 // Layout — all values in pixels at scale 1
 // ---------------------------------------------------------------------------
-static constexpr int   kConH        = 400;   // total console height when fully open
-static constexpr int   kHeaderH     = 22;    // header bar height
-static constexpr int   kInputH      = 22;    // input bar height
+static constexpr int   kConH        = 320;   // total console height when fully open
+static constexpr int   kHeaderH     = 20;    // header bar height
+static constexpr int   kInputH      = 20;    // input bar height
 static constexpr int   kBorderTop   = 2;     // top amber border thickness
 static constexpr int   kBorderSep   = 1;     // internal separator thickness
 static constexpr int   kPadX        = 8;     // left/right text padding

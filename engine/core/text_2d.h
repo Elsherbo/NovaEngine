@@ -21,9 +21,11 @@ namespace nova
 //   Bottom half (rows 8-15) = alternate character set (gold/brown)
 //   Black (or top-left pixel) = transparent background (color key).
 //
-//   Both sets are stored internally as two separate 128×128 atlases:
-//     Atlas 0 = normal set   → drawString() / drawChar()
-//     Atlas 1 = alternate set → drawStringAlt() / drawCharAlt()
+//   Both sets are stored internally as two separate atlases at
+//   NATIVE glyph resolution (e.g. 32px for a 512px sheet).
+//   s_scale is always 1. kDisplayGlyphSize controls the rendered
+//   size in pixels: we always render at exactly kDisplayGlyphSize px
+//   by setting s_glyphW/H to that value after loading.
 //
 // Usage:
 //   Text2D::init();
@@ -37,29 +39,23 @@ namespace nova
 class Text2D
 {
 public:
+    // ---- Target display size ----
+    // All glyphs render at exactly this many pixels regardless of
+    // source atlas resolution. Change this to resize all console text.
+    // 16 = one pixel per Q2 glyph pixel at 512px sheet resolution * 0.5
+    // 8  = tiny (original Q2 console size)
+    // 16 = comfortable (recommended for 1080p+)
+    static constexpr int kDisplayGlyphSize = 16;
+
     // ---- Lifecycle ----
     static void init();
     static void shutdown();
 
     // ---- External font loading ----
-
-    // Load a Q2-style conchars image. Accepts any square image whose
-    // width is a multiple of 16 (128, 256, 512, 1024...).
-    // Automatically downsamples to 8x8 glyphs using a box filter.
-    // Loads BOTH the normal set (top half) and alternate set (bottom half).
-    // Returns true on success; falls back to built-in font on failure.
     static bool tryLoadQ2Conchars(AssetFS* assets, const char* logicalPath);
-
-    // Load a simple 128×128 generic bitmap font (single set, no alternate).
-    // For non-Q2 fonts found online (int10h, UltimateDOSFont etc.)
     static bool tryLoadFont(AssetFS* assets, const char* logicalPath);
-
-    // Load from raw RGBA8 pixels directly (width x height must be 128x128).
-    // altRgba: optional second 128×128 buffer for the alternate color set.
     static bool loadFontFromPixels(const uint8_t* rgba, int width, int height,
                                    const uint8_t* altRgba = nullptr);
-
-    // Reset to built-in hardcoded IBM CP437 font (clears alternate set too).
     static void resetToBuiltinFont();
 
     // ---- Frame ----
@@ -74,7 +70,6 @@ public:
                                   int ox = 1, int oy = 1);
 
     // ---- Primitives — alternate set (gold/brown in Q2 conchars) ----
-    // Falls back to normal set if no alternate atlas was loaded.
     static void drawCharAlt(int x, int y, int charCode, Vec4 color);
     static void drawStringAlt(int x, int y, const char* text, Vec4 color);
     static void drawStringShadowAlt(int x, int y, const char* text, Vec4 color,
@@ -86,24 +81,29 @@ public:
     static void drawFillGradientH(int x, int y, int w, int h, Vec4 colorL, Vec4 colorR);
 
     // ---- Font metrics ----
+    // These always return kDisplayGlyphSize (or 8 for builtin font).
+    // Use these everywhere — never hardcode pixel sizes.
     static constexpr int kGlyphW = 8;
     static constexpr int kGlyphH = 8;
 
-    static void setScale(int scale);       // 1=tiny 2=normal 3=large 4=huge
+    static void setScale(int scale);       // legacy: prefer kDisplayGlyphSize
     static int  getScale()    { return s_scale; }
-    static int charWidth()  { return s_glyphW * s_scale; }
-    static int charHeight() { return s_glyphH * s_scale; }
+
+    // charWidth/charHeight return the ACTUAL rendered pixel size.
+    // For external fonts: kDisplayGlyphSize (e.g. 16).
+    // For builtin font:   8 * s_scale.
+    static int charWidth()  { return s_glyphW; }
+    static int charHeight() { return s_glyphH; }
     static int  stringWidth(const char* text);
 
     // ---- State queries ----
-    static bool hasAlternateSet() { return s_fontTexAlt != 0; }
-    static bool usingExternalFont() { return s_usingExternalFont; }
+    static bool hasAlternateSet()  { return s_fontTexAlt != 0; }
+    static bool usingExternalFont(){ return s_usingExternalFont; }
 
     // ---- Internal layout constant (public for setupVAOAttribs) ----
     static constexpr int kFloatsPerVertex = 8;
 
 private:
-    // Which atlas to draw from
     enum class FontSet { Normal, Alternate };
 
     static void flush();
@@ -114,12 +114,12 @@ private:
                                  uint8_t keyR, uint8_t keyG, uint8_t keyB,
                                  int halfOffset);
 
-    static void buildBuiltinAtlasBuffer(uint8_t* out);  // out = 128*128*4 bytes
+    static void buildBuiltinAtlasBuffer(uint8_t* out);
     static void uploadAtlasToGPU(uint32_t& texId, const uint8_t* rgba8, int w, int h);
     static void applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
                                uint8_t* atlas, int atlasDst, int glyphDst,
                                uint8_t keyR, uint8_t keyG, uint8_t keyB,
-                               int halfOffset);  // halfOffset=0 for top, 8 for bottom
+                               int halfOffset);
 
     static void emitQuad(float x, float y, float w, float h,
                          float u0, float v0, float u1, float v1,
@@ -132,24 +132,35 @@ private:
     static void bindFontTex(FontSet set);
 
     // GL objects
-    static uint32_t s_fontTex;        // normal atlas
-    static uint32_t s_fontTexAlt;     // alternate atlas (0 if none)
+    static uint32_t s_fontTex;
+    static uint32_t s_fontTexAlt;
     static uint32_t s_textProg;
     static uint32_t s_fillProg;
     static uint32_t s_vbo;
     static uint32_t s_vao;
     static uint32_t s_fillVao;
 
-    static int s_glyphW;  // native glyph width in atlas
-    static int s_glyphH;  // native glyph height in atlas
+    // s_glyphW/H = the RENDERED pixel size of each character.
+    // For external fonts this equals kDisplayGlyphSize.
+    // For the builtin font this equals 8 * s_scale.
+    static int s_glyphW;
+    static int s_glyphH;
+
+    // s_atlasGlyphW/H = the NATIVE pixel size in the GPU atlas texture.
+    // UV computation uses this, not s_glyphW/H.
+    static int s_atlasGlyphW;
+    static int s_atlasGlyphH;
+
+    // s_scale is kept for the builtin font path only. External fonts
+    // always set s_glyphW/H = kDisplayGlyphSize and s_scale = 1.
+    static int s_scale;
 
     // State
     static bool     s_initialized;
     static bool     s_inFrame;
     static int      s_screenW, s_screenH;
-    static int      s_scale;
     static bool     s_usingExternalFont;
-    static FontSet  s_currentFontSet;   // which atlas is currently bound
+    static FontSet  s_currentFontSet;
 
     // Vertex buffer
     static constexpr int kVertsPerQuad  = 6;

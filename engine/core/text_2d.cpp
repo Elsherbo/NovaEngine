@@ -1,36 +1,28 @@
 // ============================================================
 // FILE:    engine/core/text_2d.cpp
 // MODULE:  Core > 2D Text Overlay
-// VERSION: v6 — Alpha-channel font loading fix
+// VERSION: v7 — Fixed display size: always renders at kDisplayGlyphSize px
 //
-// KEY FIX (v6):
-//   applyColorKey() was using RGB color-distance to detect transparent
-//   background pixels. This was wrong for PNGs that use the alpha channel
-//   for transparency. The function now detects which mode the source uses:
+// KEY FIX (v7):
+//   The core problem was: s_glyphW/H was set to the native atlas glyph
+//   size (e.g. 32 for a 512px conchars sheet), causing characters to
+//   render at 32px — far too large for a game console.
 //
-//   Mode A - Alpha-channel PNG (like Quake2 conchars with alpha):
-//     - Any pixel with alpha == 0 is treated as transparent.
-//     - Pixels with alpha > 0 are rendered with their RGB color and alpha.
-//     - This preserves intentional shadow/outline effects (dark pixels
-//       with alpha > 0 are shadows, not background).
+//   The fix: after loading any external font, ALWAYS set:
+//     s_glyphW = s_glyphH = kDisplayGlyphSize  (default: 16px)
+//     s_atlasGlyphW = s_atlasGlyphH = native glyph size (for UVs)
 //
-//   Mode B - Color-keyed PNG (old-style, no alpha):
-//     - Falls back to the original RGB color-distance approach.
-//     - Background = top-left pixel's RGB color (the color key).
+//   UV computation in drawCharInternal uses s_atlasGlyphW/H to locate
+//   the correct glyph in the atlas, while the quad is drawn at
+//   s_glyphW/H (kDisplayGlyphSize) pixels on screen.
 //
-//   The distinction is: if the source image has ANY pixel with alpha < 255
-//   (i.e. it uses the alpha channel meaningfully), use Mode A. Otherwise
-//   fall back to Mode B.
+//   This means a 512px sheet (32px native glyphs) renders at 16px,
+//   a 256px sheet (16px glyphs) also renders at 16px — consistent size
+//   regardless of source resolution.
 //
-// SECONDARY FIX (v6):
-//   flush() no longer calls setupVAOAttribs() every time. Vertex attrib
-//   pointers are set once per VAO during init(). This prevents
-//   redundant state changes that could corrupt rendering when the BSP
-//   renderer has changed GL state between frames.
-//
-// TERTIARY FIX (v6):
-//   tryLoadFont() now also accepts RGBA images, not just RGB, and
-//   correctly handles the alpha channel in the same way as tryLoadQ2Conchars.
+// PREVIOUS FIX (v6):
+//   applyColorKey() detects alpha-channel vs color-key transparency.
+//   flush() no longer calls setupVAOAttribs() every frame.
 // ============================================================
 
 #include "engine/core/text_2d.h"
@@ -60,14 +52,22 @@ bool     Text2D::s_initialized     = false;
 bool     Text2D::s_inFrame         = false;
 int      Text2D::s_screenW         = 0;
 int      Text2D::s_screenH         = 0;
-int      Text2D::s_scale           = 2;
+int      Text2D::s_scale           = 1;
 bool     Text2D::s_usingExternalFont = false;
 Text2D::FontSet Text2D::s_currentFontSet = Text2D::FontSet::Normal;
 float    Text2D::s_vbuf[kMaxQuads * kFloatsPerQuad];
 int      Text2D::s_vertexCount     = 0;
 bool     Text2D::s_inFillMode      = false;
-int      Text2D::s_glyphW          = kGlyphW;
-int      Text2D::s_glyphH          = kGlyphH;
+
+// s_glyphW/H = rendered display size in pixels (what the quad is drawn at)
+// Initialized to builtin 8px; overwritten to kDisplayGlyphSize after loading external font.
+int Text2D::s_glyphW     = 8;
+int Text2D::s_glyphH     = 8;
+
+// s_atlasGlyphW/H = native glyph size in the GPU atlas texture (used for UV math)
+// For the builtin font this equals 8. For external fonts it equals srcSize/16.
+int Text2D::s_atlasGlyphW = 8;
+int Text2D::s_atlasGlyphH = 8;
 
 // ---------------------------------------------------------------------------
 // Built-in IBM CP437 8x8 font bitmap (ASCII 32-127, 96 chars x 8 rows)
@@ -201,21 +201,10 @@ out vec4 fragColor;
 void main()
 {
     vec4 texel = texture(uFontTex, vUV);
-
-    // The font atlas stores the glyph's natural color in RGB and coverage in A.
-    // For colored text: modulate the glyph's luminance by vColor, preserve alpha.
-    // This makes white glyphs take on vColor while dark shadow pixels stay dark.
-
-    // Compute luminance of the atlas texel
     float lum = dot(texel.rgb, vec3(0.2126, 0.7152, 0.0722));
-
-    // Blend between shadow color (dark/near-black) and the requested text color
-    // lum=0 -> full shadow (texel.rgb), lum=1 -> full vColor
     vec3 col = mix(texel.rgb, vColor.rgb, lum);
-
     float alpha = texel.a * vColor.a;
     if (alpha < 0.02) discard;
-
     fragColor = vec4(col, alpha);
 }
 )GLSL";
@@ -309,7 +298,6 @@ static void set2DState()
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glDepthFunc(GL_ALWAYS);
-    // Reset clip control to standard OpenGL for 2D rendering
     glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
 }
 
@@ -344,20 +332,18 @@ static void setupVAOAttribs(GLuint vbo)
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, stride, (void*)(4*sizeof(float)));
 }
 
-
 // ---------------------------------------------------------------------------
-// buildNativeAtlas
+// buildNativeAtlas — copy glyphs from source image into atlas at native size
 // ---------------------------------------------------------------------------
 void Text2D::buildNativeAtlas(const uint8_t* src, int srcSize, int glyphSrc,
     uint8_t* atlas, int atlasW,
     uint8_t keyR, uint8_t keyG, uint8_t keyB,
     int halfOffset)
 {
-    // Detect alpha mode vs color key mode
     bool useAlphaMode = false;
     const int totalPixels = srcSize * srcSize;
     for (int i = 0; i < totalPixels && !useAlphaMode; i += 4)
-    if (src[i * 4 + 3] < 255) useAlphaMode = true;
+        if (src[i * 4 + 3] < 255) useAlphaMode = true;
 
     for (int asciiCode = 0; asciiCode < 128; ++asciiCode)
     {
@@ -366,13 +352,11 @@ void Text2D::buildNativeAtlas(const uint8_t* src, int srcSize, int glyphSrc,
         int srcX   = srcCol * glyphSrc;
         int srcY   = srcRow * glyphSrc;
 
-        // Destination in atlas: only 8 rows (top half = chars 0-127)
         int dstCol = asciiCode % 16;
         int dstRow = asciiCode / 16;
         int dstX   = dstCol * glyphSrc;
         int dstY   = dstRow * glyphSrc;
 
-        // Direct pixel copy — NO downsampling
         for (int py = 0; py < glyphSrc; ++py)
         for (int px = 0; px < glyphSrc; ++px)
         {
@@ -383,10 +367,8 @@ void Text2D::buildNativeAtlas(const uint8_t* src, int srcSize, int glyphSrc,
 
             if (useAlphaMode)
             {
-            if (sa == 0)
-                {
+                if (sa == 0)
                     atlas[di+0] = atlas[di+1] = atlas[di+2] = atlas[di+3] = 0;
-                }
                 else
                 {
                     atlas[di+0] = src[si+0];
@@ -410,7 +392,7 @@ void Text2D::buildNativeAtlas(const uint8_t* src, int srcSize, int glyphSrc,
 }
 
 // ---------------------------------------------------------------------------
-// buildBuiltinAtlasBuffer
+// buildBuiltinAtlasBuffer — 128x128 RGBA8 from kFont8x8 bitmap
 // ---------------------------------------------------------------------------
 void Text2D::buildBuiltinAtlasBuffer(uint8_t* out)
 {
@@ -431,18 +413,11 @@ void Text2D::buildBuiltinAtlasBuffer(uint8_t* out)
                     int idx = ((ay + row) * 128 + (ax + col)) * 4;
                     out[idx+0] = out[idx+1] = out[idx+2] = v;
                     out[idx+3] = v;
-
                 }
-
             }
-
         }
-        s_glyphW = 8;
-        s_glyphH = 8;
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // uploadAtlasToGPU
@@ -454,7 +429,8 @@ void Text2D::uploadAtlasToGPU(uint32_t& texId, const uint8_t* rgba8, int w, int 
     glGenTextures(1, &texId);
     glBindTexture(GL_TEXTURE_2D, texId);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba8);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    // Use LINEAR filtering so the glyph downscales smoothly when display < atlas size
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -464,42 +440,19 @@ void Text2D::uploadAtlasToGPU(uint32_t& texId, const uint8_t* rgba8, int w, int 
 }
 
 // ---------------------------------------------------------------------------
-// applyColorKey — THE MAIN FIX
-//
-// Detects whether the source image uses the alpha channel for transparency
-// (Mode A) or uses an RGB color key (Mode B), and processes accordingly.
-//
-// Mode A (alpha-transparent PNG):
-//   - Triggered when ANY pixel has alpha < 255 (image uses alpha channel).
-//   - alpha == 0 pixels are fully transparent.
-//   - alpha > 0 pixels are rendered with their RGBA values.
-//   - This preserves intentional shadow/outline effects.
-//
-// Mode B (color-keyed image, all-opaque):
-//   - Falls back to RGB color-distance from (keyR,keyG,keyB).
-//   - Any pixel within sqrt(kKeyThresh) distance of the key is transparent.
-//
-// The atlas is always 128x128 RGBA8.
-// glyphSrc = source pixels per glyph (e.g. 32 for a 512x512 source)
-// glyphDst = dest pixels per glyph (always 8)
-// halfOffset = 0 for top half (normal set), 8 for bottom half (alt set)
+// applyColorKey
 // ---------------------------------------------------------------------------
 void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
                             uint8_t* atlas, int atlasDst, int glyphDst,
                             uint8_t keyR, uint8_t keyG, uint8_t keyB,
                             int halfOffset)
 {
-    const int scale = glyphSrc / glyphDst;  // e.g. 4 for 512->128
+    const int scale = glyphSrc / glyphDst;
 
-    // Detect if this is an alpha-channel image (Mode A) or color-keyed (Mode B).
-    // Sample every 4th pixel for speed. If any pixel has alpha < 255, use alpha mode.
     bool useAlphaMode = false;
     const int totalPixels = srcSize * srcSize;
     for (int i = 0; i < totalPixels && !useAlphaMode; i += 4)
-    {
-        if (src[i * 4 + 3] < 255)
-            useAlphaMode = true;
-    }
+        if (src[i * 4 + 3] < 255) useAlphaMode = true;
 
     for (int asciiCode = 0; asciiCode < 128; ++asciiCode)
     {
@@ -515,22 +468,17 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
 
         if (scale <= 1)
         {
-            // 1:1 copy
             for (int py = 0; py < glyphDst; ++py)
             for (int px = 0; px < glyphDst; ++px)
             {
                 int si = ((srcY + py) * srcSize + (srcX + px)) * 4;
                 int di = ((dstY + py) * atlasDst + (dstX + px)) * 4;
-
                 const uint8_t sa = src[si+3];
 
                 if (useAlphaMode)
                 {
-                    // Mode A: use alpha channel directly
                     if (sa == 0)
-                    {
                         atlas[di+0] = atlas[di+1] = atlas[di+2] = atlas[di+3] = 0;
-                    }
                     else
                     {
                         atlas[di+0] = src[si+0];
@@ -541,10 +489,9 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
                 }
                 else
                 {
-                    // Mode B: RGB color key
                     uint8_t r = src[si+0], g = src[si+1], b = src[si+2];
                     int dr = r-keyR, dg = g-keyG, db = b-keyB;
-                    bool isKey = (dr*dr + dg*dg + db*db) < 100; // tighter threshold
+                    bool isKey = (dr*dr + dg*dg + db*db) < 100;
                     atlas[di+0] = isKey ? 0 : r;
                     atlas[di+1] = isKey ? 0 : g;
                     atlas[di+2] = isKey ? 0 : b;
@@ -554,7 +501,6 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
         }
         else
         {
-            // N:1 box filter downsample
             for (int py = 0; py < glyphDst; ++py)
             for (int px = 0; px < glyphDst; ++px)
             {
@@ -562,7 +508,6 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
 
                 if (useAlphaMode)
                 {
-                    // Mode A: average RGBA, skip fully transparent pixels
                     int rSum=0, gSum=0, bSum=0, aSum=0;
                     int count = scale * scale;
 
@@ -579,9 +524,7 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
 
                     int avgA = aSum / count;
                     if (avgA < 4)
-                    {
                         atlas[di+0] = atlas[di+1] = atlas[di+2] = atlas[di+3] = 0;
-                    }
                     else
                     {
                         atlas[di+0] = (uint8_t)(rSum / count);
@@ -592,8 +535,7 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
                 }
                 else
                 {
-                    // Mode B: RGB color key with box filter
-                    constexpr int kKeyThresh = 100; // tighter: sqrt(100)=10 units
+                    constexpr int kKeyThresh = 100;
                     int rSum=0, gSum=0, bSum=0, count=0;
 
                     for (int sy = 0; sy < scale; ++sy)
@@ -608,9 +550,7 @@ void Text2D::applyColorKey(const uint8_t* src, int srcSize, int glyphSrc,
                     }
 
                     if (count == 0)
-                    {
                         atlas[di+0] = atlas[di+1] = atlas[di+2] = atlas[di+3] = 0;
-                    }
                     else
                     {
                         atlas[di+0] = (uint8_t)(rSum / count);
@@ -635,16 +575,22 @@ void Text2D::init()
     GLint savedVAO = 0;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &savedVAO);
 
+    // Builtin font: 8x8 glyphs, 128x128 atlas
     uint8_t atlas[128 * 128 * 4];
     buildBuiltinAtlasBuffer(atlas);
     uploadAtlasToGPU(s_fontTex, atlas, 128, 128);
     s_fontTexAlt = 0;
     s_usingExternalFont = false;
 
+    // Builtin font renders at 8 * s_scale pixels
+    s_glyphW      = 8 * s_scale;
+    s_glyphH      = 8 * s_scale;
+    s_atlasGlyphW = 8;
+    s_atlasGlyphH = 8;
+
     s_textProg = compileProg(kVSText, kFSText);
     s_fillProg = compileProg(kVSFill, kFSFill);
 
-    // Shared VBO
     glGenBuffers(1, &s_vbo);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
     glBufferData(GL_ARRAY_BUFFER,
@@ -652,13 +598,11 @@ void Text2D::init()
                  nullptr, GL_STREAM_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    // Text VAO — attribs set ONCE here, NOT in flush()
     glGenVertexArrays(1, &s_vao);
     glBindVertexArray(s_vao);
     setupVAOAttribs(s_vbo);
     glBindVertexArray(0);
 
-    // Fill VAO
     glGenVertexArrays(1, &s_fillVao);
     glBindVertexArray(s_fillVao);
     setupVAOAttribs(s_vbo);
@@ -667,7 +611,7 @@ void Text2D::init()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     if (savedVAO) glBindVertexArray(savedVAO);
 
-    fprintf(stderr, "[Text2D] init OK — fontTex=%u (builtin IBM CP437)\n", s_fontTex);
+    fprintf(stderr, "[Text2D] init OK — fontTex=%u (builtin IBM CP437 8x8)\n", s_fontTex);
 }
 
 // ---------------------------------------------------------------------------
@@ -702,20 +646,19 @@ bool Text2D::tryLoadQ2Conchars(AssetFS* assets, const char* logicalPath)
     }
 
     const int srcSize  = img.width;
-    const int glyphSrc = srcSize / 16;  // native glyph size e.g. 16 for 256px sheet
+    const int glyphSrc = srcSize / 16;  // native glyph size: 8 for 128px, 16 for 256px, 32 for 512px
 
-    // Color key = top-left pixel RGB
     const uint8_t keyR = img.rgba[0];
     const uint8_t keyG = img.rgba[1];
     const uint8_t keyB = img.rgba[2];
 
-    fprintf(stdout, "[Text2D] loading conchars '%s' (%dx%d, %dpx glyphs)\n",
-            logicalPath, srcSize, srcSize, glyphSrc);
+    fprintf(stdout, "[Text2D] loading conchars '%s' (%dx%d, %dpx native glyphs → display at %dpx)\n",
+            logicalPath, srcSize, srcSize, glyphSrc, kDisplayGlyphSize);
 
-    // --- Build normal atlas at NATIVE glyph size (top half: rows 0-7) ---
-    // Atlas is 16 cols x 8 rows of glyphs = (16*glyphSrc) x (8*glyphSrc)
+    // Build atlas at NATIVE glyph resolution (preserves full quality)
+    // The atlas is 16 cols × 8 rows of native-size glyphs
     const int atlasW = 16 * glyphSrc;
-    const int atlasH = 8  * glyphSrc;  // only top half (128 chars)
+    const int atlasH =  8 * glyphSrc;
 
     std::vector<uint8_t> normalAtlas(atlasW * atlasH * 4, 0);
     buildNativeAtlas(img.rgba.data(), srcSize, glyphSrc,
@@ -723,11 +666,7 @@ bool Text2D::tryLoadQ2Conchars(AssetFS* assets, const char* logicalPath)
                      keyR, keyG, keyB, 0);
     uploadAtlasToGPU(s_fontTex, normalAtlas.data(), atlasW, atlasH);
 
-    // Update glyph metrics to native size
-    s_glyphW = glyphSrc;
-    s_glyphH = glyphSrc;
-
-    // --- Alt atlas (bottom half: rows 8-15) ---
+    // Alt atlas (bottom half of conchars: rows 8-15)
     if (srcSize >= glyphSrc * 16)
     {
         std::vector<uint8_t> altAtlas(atlasW * atlasH * 4, 0);
@@ -741,6 +680,15 @@ bool Text2D::tryLoadQ2Conchars(AssetFS* assets, const char* logicalPath)
     {
         if (s_fontTexAlt) { glDeleteTextures(1, &s_fontTexAlt); s_fontTexAlt = 0; }
     }
+
+    // KEY FIX: rendered size = kDisplayGlyphSize always, regardless of source resolution
+    // UV math uses s_atlasGlyphW/H (native) to address the correct glyph in the atlas.
+    // The quad is drawn at s_glyphW/H (kDisplayGlyphSize) pixels on screen.
+    s_glyphW      = kDisplayGlyphSize;
+    s_glyphH      = kDisplayGlyphSize;
+    s_atlasGlyphW = glyphSrc;
+    s_atlasGlyphH = glyphSrc;
+    s_scale       = 1;
 
     s_usingExternalFont = true;
     return true;
@@ -788,7 +736,6 @@ bool Text2D::loadFontFromPixels(const uint8_t* rgba, int width, int height,
 {
     if (!rgba || width != 128 || height != 128) return false;
 
-    // Check if this image uses alpha channel transparency
     bool hasAlpha = false;
     for (int i = 0; i < 128*128 && !hasAlpha; ++i)
         if (rgba[i*4+3] < 255) hasAlpha = true;
@@ -797,7 +744,6 @@ bool Text2D::loadFontFromPixels(const uint8_t* rgba, int width, int height,
 
     if (hasAlpha)
     {
-        // Use alpha channel directly
         for (int i = 0; i < 128*128; ++i)
         {
             fixed[i*4+0] = rgba[i*4+0];
@@ -808,7 +754,6 @@ bool Text2D::loadFontFromPixels(const uint8_t* rgba, int width, int height,
     }
     else
     {
-        // Fallback: color key from top-left pixel
         const uint8_t keyR = rgba[0], keyG = rgba[1], keyB = rgba[2];
         constexpr int kKeyThresh = 100;
         for (int i = 0; i < 128*128; ++i)
@@ -832,6 +777,13 @@ bool Text2D::loadFontFromPixels(const uint8_t* rgba, int width, int height,
         if (s_fontTexAlt) { glDeleteTextures(1, &s_fontTexAlt); s_fontTexAlt = 0; }
     }
 
+    // 128px sheet = 8px native glyphs, display at kDisplayGlyphSize
+    s_glyphW      = kDisplayGlyphSize;
+    s_glyphH      = kDisplayGlyphSize;
+    s_atlasGlyphW = 8;
+    s_atlasGlyphH = 8;
+    s_scale       = 1;
+
     s_usingExternalFont = true;
     return true;
 }
@@ -846,15 +798,26 @@ void Text2D::resetToBuiltinFont()
     uploadAtlasToGPU(s_fontTex, atlas, 128, 128);
     if (s_fontTexAlt) { glDeleteTextures(1, &s_fontTexAlt); s_fontTexAlt = 0; }
     s_usingExternalFont = false;
+    s_glyphW      = 8 * s_scale;
+    s_glyphH      = 8 * s_scale;
+    s_atlasGlyphW = 8;
+    s_atlasGlyphH = 8;
     fprintf(stdout, "[Text2D] reset to built-in IBM CP437 font\n");
 }
 
 // ---------------------------------------------------------------------------
-// setScale
+// setScale — only affects the builtin font
 // ---------------------------------------------------------------------------
 void Text2D::setScale(int scale)
 {
     s_scale = (scale < 1) ? 1 : (scale > 4 ? 4 : scale);
+    if (!s_usingExternalFont)
+    {
+        s_glyphW      = 8 * s_scale;
+        s_glyphH      = 8 * s_scale;
+        s_atlasGlyphW = 8;
+        s_atlasGlyphH = 8;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -948,11 +911,7 @@ void Text2D::bindFontTex(FontSet set)
 }
 
 // ---------------------------------------------------------------------------
-// flush — draw pending text quads
-//
-// FIX v6: No longer calls setupVAOAttribs() — that was done once in init().
-// Just bind the VAO (which already has all attrib pointers set) and upload
-// the vertex data.
+// flush
 // ---------------------------------------------------------------------------
 void Text2D::flush()
 {
@@ -970,12 +929,10 @@ void Text2D::flush()
     uint32_t tex = (s_currentFontSet == FontSet::Alternate && s_fontTexAlt)
                    ? s_fontTexAlt : s_fontTex;
     glBindTexture(GL_TEXTURE_2D, tex);
-    glBindSampler(0, 0);  // detach any BSP mipmap sampler
+    glBindSampler(0, 0);
 
     glBindVertexArray(s_vao);
     glBindBuffer(GL_ARRAY_BUFFER, s_vbo);
-    // FIX: Only upload data — do NOT call setupVAOAttribs here.
-    // The VAO already has all attribute pointers configured from init().
     glBufferSubData(GL_ARRAY_BUFFER, 0,
                     (GLsizeiptr)(s_vertexCount * kFloatsPerVertex * sizeof(float)),
                     s_vbuf);
@@ -1028,6 +985,10 @@ void Text2D::drawFillGradientH(int x, int y, int w, int h, Vec4 cL, Vec4 cR)
 
 // ---------------------------------------------------------------------------
 // drawCharInternal
+//
+// KEY FIX: Uses s_atlasGlyphW/H for UV calculation (native atlas resolution),
+// but draws the quad at s_glyphW/H pixels (kDisplayGlyphSize = 16px).
+// This decouples display size from atlas resolution.
 // ---------------------------------------------------------------------------
 void Text2D::drawCharInternal(int x, int y, int charCode, Vec4 color, FontSet set)
 {
@@ -1038,19 +999,19 @@ void Text2D::drawCharInternal(int x, int y, int charCode, Vec4 color, FontSet se
     int gx = charCode % 16;
     int gy = charCode / 16;
 
-    // Atlas is 16 cols x 8 rows of native-size glyphs
-    // UV step per glyph = 1/16 horizontally, 1/8 vertically
+    // UV step per glyph in the atlas (always 1/16 horizontally, 1/8 vertically
+    // because the atlas is 16 cols × 8 rows of glyphs regardless of native size)
     constexpr float kStepU = 1.0f / 16.0f;
     constexpr float kStepV = 1.0f / 8.0f;
 
-    // Remove the inset entirely for nearest-neighbor - it was clipping glyph edges
     float u0 = gx * kStepU;
     float v0 = gy * kStepV;
     float u1 = u0 + kStepU;
     float v1 = v0 + kStepV;
 
-    float fw = (float)(s_glyphW * s_scale);
-    float fh = (float)(s_glyphH * s_scale);
+    // Quad drawn at display size (kDisplayGlyphSize), NOT atlas native size
+    float fw = (float)s_glyphW;
+    float fh = (float)s_glyphH;
 
     emitQuad((float)x, (float)y, fw, fh, u0, v0, u1, v1,
              color.x, color.y, color.z, color.w);
@@ -1080,10 +1041,6 @@ void Text2D::drawString(int x, int y, const char* text, Vec4 color)
 void Text2D::drawStringShadow(int x, int y, const char* text, Vec4 color,
                                Vec4 shadowColor, int ox, int oy)
 {
-    // With the new shader, the glyph's shadow pixels are already in the atlas.
-    // We draw the shadow pass first at an offset, then the main text.
-    // For fonts that already have embedded shadows (like Q2 conchars), passing
-    // a very dark shadowColor works well.
     drawString(x+ox, y+oy, text, shadowColor);
     if (s_vertexCount > 0) flush();
     drawString(x, y, text, color);
