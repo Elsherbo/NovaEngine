@@ -91,8 +91,8 @@ public:
 
     static void setScale(int scale);       // 1=tiny 2=normal 3=large 4=huge
     static int  getScale()    { return s_scale; }
-    static int  charWidth()   { return kGlyphW * s_scale; }
-    static int  charHeight()  { return kGlyphH * s_scale; }
+    static int charWidth()  { return s_glyphW * s_scale; }
+    static int charHeight() { return s_glyphH * s_scale; }
     static int  stringWidth(const char* text);
 
     // ---- State queries ----
@@ -108,6 +108,11 @@ private:
 
     static void flush();
     static void flushFill();
+
+    static void buildNativeAtlas(const uint8_t* src, int srcSize, int glyphSrc,
+                                 uint8_t* atlas, int atlasW,
+                                 uint8_t keyR, uint8_t keyG, uint8_t keyB,
+                                 int halfOffset);
 
     static void buildBuiltinAtlasBuffer(uint8_t* out);  // out = 128*128*4 bytes
     static void uploadAtlasToGPU(uint32_t& texId, const uint8_t* rgba8, int w, int h);
@@ -134,6 +139,9 @@ private:
     static uint32_t s_vbo;
     static uint32_t s_vao;
     static uint32_t s_fillVao;
+
+    static int s_glyphW;  // native glyph width in atlas
+    static int s_glyphH;  // native glyph height in atlas
 
     // State
     static bool     s_initialized;
