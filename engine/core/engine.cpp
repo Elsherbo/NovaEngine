@@ -325,8 +325,32 @@ void main()
             return false;
         }
 
-        // ---- Text2D ----
+        // ---- Load console font ----
         Text2D::init();
+        {
+            // Try Q2 conchars first (256×256 with 16×16 glyphs)
+            const char* q2fonts[] = {
+                "pics/conchars.png",
+                "pics/conchars.tga",
+            };
+            bool loaded = false;
+            for (const char* fp : q2fonts)
+                if ((loaded = Text2D::tryLoadQ2Conchars(&m_assets, fp))) break;
+
+            // Fall back to generic 128×128 bitmap fonts
+            if (!loaded)
+            {
+                const char* fallbacks[] = {
+                    "pics/font.png",
+                    "pics/font.tga",
+                };
+                for (const char* fp : fallbacks)
+                    if ((loaded = Text2D::tryLoadFont(&m_assets, fp))) break;
+            }
+
+            if (!loaded)
+                fprintf(stdout, "[Text2D] using built-in IBM CP437 font\n");
+        }
 
         // ---- AssetFS ----
         // Assets are mounted from bspDir/gameDir in step below
