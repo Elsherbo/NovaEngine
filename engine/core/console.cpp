@@ -1,14 +1,43 @@
 // ============================================================
 // FILE:    engine/core/console.cpp
 // MODULE:  Core > Console
-// VERSION: v3 — Q2 conchars alternate set support
+// VERSION: v4 — Redesigned UI: Military Terminal Aesthetic
 //
-// CHANGES:
-//   - Header title uses drawStringAlt (gold set from conchars)
-//   - Warning lines use drawStringAlt
-//   - Command echo uses drawStringAlt
-//   - Prompt uses drawStringAlt
-//   - All other text uses drawString (normal silver set)
+// DESIGN PHILOSOPHY:
+//   Pure black backgrounds with a single amber accent. No gradients.
+//   No decorative noise. The font IS the decoration — corner brackets
+//   and separator lines are drawn using conchars characters so everything
+//   reads as part of the same visual language. One accent color (amber)
+//   used exclusively for: the top border line, the prompt glyph, the
+//   cursor, warning text, and the scroll thumb. Everything else is
+//   off-white on black.
+//
+// LAYOUT (top to bottom):
+//   ┌─ 1px amber top border ───────────────────────────────┐
+//   │  HEADER BAR (solid black, 20px)                       │
+//   │    [ NOVA ENGINE ]          v0.1.0  |  OpenGL 4.5    │
+//   ├─ 1px dark separator ─────────────────────────────────┤
+//   │  SCROLLBACK (semi-transparent black)                  │
+//   │    line N                                             │
+//   │    line N-1                                           │
+//   ├─ 1px amber separator ────────────────────────────────┤
+//   │  INPUT BAR (solid black, 20px)                        │
+//   │    > _                                                │
+//   └─ 1px amber bottom border ────────────────────────────┘
+//
+// COLOR PALETTE:
+//   Background body   : rgba(0, 0, 0, 0.92)       pure black, near-opaque
+//   Header/input bars : rgba(0, 0, 0, 1.0)         solid black
+//   Accent (amber)    : rgb(255, 176, 0)            single accent
+//   Text normal       : rgb(200, 200, 195)          warm off-white
+//   Text dim          : rgb(90, 90, 88)             dark gray
+//   Text system       : rgb(100, 160, 200)          cold blue (engine msgs)
+//   Text error        : rgb(220, 70, 50)            red
+//   Text warn         : amber accent
+//   Border bright     : amber accent, full opacity
+//   Border dim        : rgb(40, 40, 40)             near-black separator
+//   Scroll track      : rgb(15, 15, 15)
+//   Scroll thumb      : amber accent at 70% opacity
 // ============================================================
 
 #include "engine/core/console.h"
@@ -28,73 +57,101 @@ namespace nova
 {
 
 // ---------------------------------------------------------------------------
-// Layout constants
+// Layout — all values in pixels at scale 1
 // ---------------------------------------------------------------------------
-static constexpr int   kConH       = 420;
-static constexpr int   kHeaderH    = 24;
-static constexpr int   kInputH     = 30;
-static constexpr int   kPadX       = 10;
-static constexpr int   kPadY       = 5;
-static constexpr int   kScrollW    = 5;
-static constexpr int   kScrollGap  = 3;
-static constexpr float kSlideSpeed = 14.0f;
+static constexpr int   kConH        = 400;   // total console height when fully open
+static constexpr int   kHeaderH     = 22;    // header bar height
+static constexpr int   kInputH      = 22;    // input bar height
+static constexpr int   kBorderTop   = 2;     // top amber border thickness
+static constexpr int   kBorderSep   = 1;     // internal separator thickness
+static constexpr int   kPadX        = 8;     // left/right text padding
+static constexpr int   kPadY        = 3;     // top/bottom text padding in scrollback
+static constexpr int   kScrollW     = 3;     // scrollbar width (thin, minimal)
+static constexpr int   kScrollGap   = 4;     // gap between text and scrollbar
+static constexpr float kSlideSpeed  = 16.0f; // slide animation speed
 
 // ---------------------------------------------------------------------------
-// Colors
+// Color palette — single source of truth
+// All Vec4 values are linear (no sRGB conversion needed for 2D overlay)
 // ---------------------------------------------------------------------------
-static constexpr Vec4 kBgMain    = { 0.039f, 0.047f, 0.063f, 0.93f };
-static constexpr Vec4 kBgHeader  = { 0.059f, 0.075f, 0.094f, 1.00f };
-static constexpr Vec4 kBgHeaderR = { 0.094f, 0.063f, 0.020f, 1.00f };
-static constexpr Vec4 kBgInput   = { 0.020f, 0.024f, 0.031f, 1.00f };
-static constexpr Vec4 kBgScanL   = { 0.000f, 0.000f, 0.000f, 0.06f };
 
-static constexpr Vec4 kBorderAmber = { 0.784f, 0.471f, 0.125f, 0.90f };
-static constexpr Vec4 kBorderDim   = { 0.200f, 0.220f, 0.260f, 0.60f };
+// Core surfaces
+static constexpr Vec4 kClrBodyBg    = { 0.000f, 0.000f, 0.000f, 0.920f }; // scrollback bg
+static constexpr Vec4 kClrBarBg     = { 0.000f, 0.000f, 0.000f, 1.000f }; // header/input bars
 
-static constexpr Vec4 kScrollTrack = { 0.067f, 0.078f, 0.098f, 1.00f };
-static constexpr Vec4 kScrollThumb = { 0.620f, 0.373f, 0.098f, 0.90f };
+// The ONE accent color — amber
+static constexpr Vec4 kClrAmber     = { 1.000f, 0.690f, 0.000f, 1.000f }; // #FFB000
+static constexpr Vec4 kClrAmberDim  = { 1.000f, 0.690f, 0.000f, 0.600f }; // amber 60%
+static constexpr Vec4 kClrAmberFaint= { 1.000f, 0.690f, 0.000f, 0.120f }; // amber 12% (scanline)
 
-// Text colors indexed by ConColor enum
-static constexpr Vec4 kColTable[] = {
-    { 0.847f, 0.816f, 0.753f, 1.00f }, // Output  — warm off-white
-    { 0.910f, 0.580f, 0.039f, 1.00f }, // Command — amber
-    { 0.910f, 0.188f, 0.125f, 1.00f }, // Error   — red-orange
-    { 0.910f, 0.753f, 0.125f, 1.00f }, // Warn    — yellow
-    { 0.125f, 0.784f, 0.784f, 1.00f }, // System  — cyan
-    { 0.251f, 0.847f, 0.251f, 1.00f }, // Success — green
-    { 0.282f, 0.267f, 0.251f, 1.00f }, // Dim     — dark gray
-    { 1.000f, 0.720f, 0.200f, 1.00f }, // Accent  — bright amber
-};
+// Text colors indexed by ConColor
+static constexpr Vec4 kClrText      = { 0.784f, 0.784f, 0.765f, 1.000f }; // warm off-white
+static constexpr Vec4 kClrTextDim   = { 0.353f, 0.353f, 0.345f, 1.000f }; // gray
+static constexpr Vec4 kClrTextSys   = { 0.392f, 0.627f, 0.784f, 1.000f }; // cold blue
+static constexpr Vec4 kClrTextErr   = { 0.863f, 0.275f, 0.196f, 1.000f }; // red
+static constexpr Vec4 kClrTextOk    = { 0.353f, 0.784f, 0.392f, 1.000f }; // green
+static constexpr Vec4 kClrTextCmd   = kClrAmber;                            // cmd echo = amber
 
-// Header / prompt colors
-static constexpr Vec4 kColHeader  = { 1.000f, 1.000f, 1.000f, 1.00f }; // white → shows gold from alt set
-static constexpr Vec4 kColVersion = { 0.400f, 0.440f, 0.520f, 1.00f };
-static constexpr Vec4 kColPrompt  = { 1.000f, 1.000f, 1.000f, 1.00f }; // white → gold from alt set
-static constexpr Vec4 kColCursor  = { 0.910f, 0.720f, 0.200f, 1.00f };
-static constexpr Vec4 kColInput   = { 0.847f, 0.816f, 0.753f, 1.00f };
-static constexpr Vec4 kShadow     = { 0.000f, 0.000f, 0.000f, 0.70f };
+// Borders / separators
+static constexpr Vec4 kClrBorderHi  = kClrAmber;
+static constexpr Vec4 kClrBorderLo  = { 0.157f, 0.157f, 0.157f, 1.000f }; // #282828
+static constexpr Vec4 kClrBorderVLo = { 0.078f, 0.078f, 0.078f, 1.000f }; // #141414
+
+// Scrollbar
+static constexpr Vec4 kClrScrollTrk = { 0.059f, 0.059f, 0.059f, 1.000f };
+static constexpr Vec4 kClrScrollThm = kClrAmberDim;
+
+// Header version text
+static constexpr Vec4 kClrVersion   = { 0.275f, 0.275f, 0.267f, 1.000f }; // muted gray
+
+// Shadow for text (pure black, heavy)
+static constexpr Vec4 kClrShadow    = { 0.000f, 0.000f, 0.000f, 0.900f };
+
+// ---------------------------------------------------------------------------
+// Map ConColor -> Vec4
+// ---------------------------------------------------------------------------
+static const Vec4& colorFor(ConColor c)
+{
+    switch (c)
+    {
+        case ConColor::Output:  return kClrText;
+        case ConColor::Command: return kClrTextCmd;
+        case ConColor::Error:   return kClrTextErr;
+        case ConColor::Warn:    return kClrAmber;
+        case ConColor::System:  return kClrTextSys;
+        case ConColor::Success: return kClrTextOk;
+        case ConColor::Dim:     return kClrTextDim;
+        case ConColor::Accent:  return kClrAmber;
+        default:                return kClrText;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Should this line use the alternate (amber) glyph set?
+// Only command echoes and warnings use it — everything else uses normal.
+// ---------------------------------------------------------------------------
+static bool useAltSet(ConColor c)
+{
+    return c == ConColor::Command || c == ConColor::Warn || c == ConColor::Accent;
+}
 
 // ---------------------------------------------------------------------------
 Console::Console()  = default;
 Console::~Console() = default;
 
 // ---------------------------------------------------------------------------
-// addLogLine — called by Logger hook, strips timestamp prefix
-// ---------------------------------------------------------------------------
 void Console::addLogLine(LogLevel level, const char* rawMsg)
 {
     if (!rawMsg) return;
 
-    // Strip "[YYYY-MM-DD HH:MM:SS] [LEVEL] " prefix added by Logger
+    // Strip "[YYYY-MM-DD HH:MM:SS] [LEVEL] " prefix
     const char* msg = rawMsg;
     const char* p   = rawMsg;
     int brackets    = 0;
     while (*p)
     {
         if (*p == ']' && *(p+1) == ' ')
-        {
             if (++brackets == 2) { msg = p + 2; break; }
-        }
         ++p;
     }
 
@@ -108,22 +165,20 @@ void Console::addLogLine(LogLevel level, const char* rawMsg)
         default:              col = ConColor::Output; break;
     }
 
+    // Prefix tag for warn/error only — info lines are clean
     char tagged[1100];
     switch (level)
     {
-        case LogLevel::Warn:  snprintf(tagged, sizeof(tagged), "[WARN]  %s", msg); break;
-        case LogLevel::Error: snprintf(tagged, sizeof(tagged), "[ERROR] %s", msg); break;
-        case LogLevel::Debug: snprintf(tagged, sizeof(tagged), "[DBG]   %s", msg); break;
-        default:              snprintf(tagged, sizeof(tagged), "%s", msg);          break;
+        case LogLevel::Warn:  snprintf(tagged, sizeof(tagged), "WARN  %s", msg);  break;
+        case LogLevel::Error: snprintf(tagged, sizeof(tagged), "ERROR %s", msg);  break;
+        default:              snprintf(tagged, sizeof(tagged), "%s", msg);         break;
     }
 
     const int cw      = Text2D::charWidth();
     const int maxCols = (1280 - kPadX * 2 - kScrollW - kScrollGap) / cw;
-    wrapAndAdd(tagged, col, maxCols > 10 ? maxCols : 78);
+    wrapAndAdd(tagged, col, maxCols > 10 ? maxCols : 72);
 }
 
-// ---------------------------------------------------------------------------
-// wrapAndAdd — word-wrap a long line and add each piece
 // ---------------------------------------------------------------------------
 void Console::wrapAndAdd(const std::string& text, ConColor color, int maxCols)
 {
@@ -153,8 +208,6 @@ void Console::wrapAndAdd(const std::string& text, ConColor color, int maxCols)
 }
 
 // ---------------------------------------------------------------------------
-// addLine
-// ---------------------------------------------------------------------------
 void Console::addLine(const std::string& line, ConColor color)
 {
     m_scrollback.push_back({line, color});
@@ -163,15 +216,13 @@ void Console::addLine(const std::string& line, ConColor color)
 }
 
 // ---------------------------------------------------------------------------
-// submit — execute a console command
-// ---------------------------------------------------------------------------
 void Console::submit(const char* line)
 {
     if (!line || !*line) return;
 
-    addLine(std::string("] ") + line, ConColor::Command);
+    // Echo with a clean "> " prefix in amber
+    addLine(std::string("> ") + line, ConColor::Command);
 
-    // Push to history (skip duplicates)
     if (m_historyCount == 0 || m_history[0] != line)
     {
         for (int i = kMaxHistory - 1; i > 0; --i)
@@ -186,11 +237,8 @@ void Console::submit(const char* line)
 }
 
 // ---------------------------------------------------------------------------
-// handleInput
-// ---------------------------------------------------------------------------
 void Console::handleInput(const InputState& cur, const InputState& prev)
 {
-    // Tilde toggles console
     const bool grave = cur.keys[SDL_SCANCODE_GRAVE];
     if (grave && !m_prevGrave)
     {
@@ -201,7 +249,6 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
 
     if (!m_open) return;
 
-    // Escape closes console
     if (cur.keys[SDL_SCANCODE_ESCAPE] && !prev.keys[SDL_SCANCODE_ESCAPE])
     {
         close();
@@ -209,7 +256,6 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
         return;
     }
 
-    // Enter submits
     if (cur.keys[SDL_SCANCODE_RETURN] && !prev.keys[SDL_SCANCODE_RETURN])
     {
         if (!m_inputBuf.empty()) submit(m_inputBuf.c_str());
@@ -217,7 +263,6 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
         return;
     }
 
-    // History navigation
     if (cur.keys[SDL_SCANCODE_UP] && !prev.keys[SDL_SCANCODE_UP])
     {
         if (m_historyIdx < m_historyCount - 1)
@@ -233,10 +278,9 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
         return;
     }
 
-    // Scroll
     const int ch     = Text2D::charHeight();
     const int lineH  = ch + 2;
-    const int textAreaH = kConH - kHeaderH - 1 - kInputH - kPadY * 2;
+    const int textAreaH = kConH - kBorderTop - kHeaderH - kBorderSep - kInputH - kBorderSep - kPadY * 2;
     const int lpp    = std::max(1, textAreaH / lineH);
 
     if (cur.keys[SDL_SCANCODE_PAGEUP]   && !prev.keys[SDL_SCANCODE_PAGEUP])
@@ -244,7 +288,6 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
     if (cur.keys[SDL_SCANCODE_PAGEDOWN] && !prev.keys[SDL_SCANCODE_PAGEDOWN])
     { m_scroll = std::max(m_scroll - lpp, 0); return; }
 
-    // Editing
     if (cur.keys[SDL_SCANCODE_BACKSPACE] && !prev.keys[SDL_SCANCODE_BACKSPACE])
     {
         if (m_inputPos > 0) { m_inputBuf.erase(m_inputPos - 1, 1); --m_inputPos; }
@@ -261,7 +304,6 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
     if (cur.keys[SDL_SCANCODE_RIGHT] && !prev.keys[SDL_SCANCODE_RIGHT]) { if (m_inputPos < (int)m_inputBuf.size()) ++m_inputPos; return; }
     if (cur.keys[SDL_SCANCODE_TAB]   && !prev.keys[SDL_SCANCODE_TAB])   return;
 
-    // Character input
     const bool shift = cur.keys[SDL_SCANCODE_LSHIFT] || cur.keys[SDL_SCANCODE_RSHIFT];
     struct KM { int sc; char p, s; };
     static const KM kMap[] = {
@@ -301,7 +343,7 @@ void Console::handleInput(const InputState& cur, const InputState& prev)
 // ---------------------------------------------------------------------------
 void Console::render(int screenW, int screenH)
 {
-    // --- Delta time for slide animation ---
+    // ---- Delta time ----
     static uint64_t s_lastTime = 0;
     uint64_t now = SDL_GetPerformanceCounter();
     float dt = (s_lastTime == 0)
@@ -310,7 +352,7 @@ void Console::render(int screenW, int screenH)
     if (dt > 0.1f) dt = 0.1f;
     s_lastTime = now;
 
-    // --- Slide animation ---
+    // ---- Slide animation ----
     float target = m_open ? 1.0f : 0.0f;
     float diff   = target - m_slideT;
     if (std::abs(diff) > 0.001f)
@@ -320,64 +362,107 @@ void Console::render(int screenW, int screenH)
 
     if (m_slideT <= 0.001f) return;
 
-    const int consoleH = (int)(kConH * m_slideT);
-    const int headerH  = (int)(kHeaderH * m_slideT);
-    const int inputY   = consoleH - kInputH;
-
-    Text2D::init();
-    Text2D::begin(screenW, screenH);
-
-    // --- Background ---
-    Text2D::drawFill(0, 0, screenW, consoleH, kBgMain);
-
-    // Scanlines effect
-    if (m_slideT > 0.85f)
-    {
-        const int scanStart = kHeaderH + 1;
-        const int scanEnd   = inputY;
-        for (int sy = scanStart; sy < scanEnd; sy += 2)
-            Text2D::drawFill(0, sy, screenW - kScrollW - kScrollGap, 1, kBgScanL);
-    }
-
-    // --- Header bar ---
-    if (headerH > 0)
-    {
-        Text2D::drawFillGradientH(0, 0, screenW, headerH, kBgHeader, kBgHeaderR);
-        Text2D::drawFill(0, headerH, screenW, 2, kBorderAmber);
-
-        if (m_slideT > 0.6f)
-        {
-            const int ch = Text2D::charHeight();
-            const int ty = (headerH - ch) / 2;
-            if (ty >= 0 && ty + ch <= headerH)
-            {
-                // Title uses alternate set (gold glyphs from conchars bottom half)
-                // Falls back to normal set with kColHeader tint if no alt set loaded
-                Text2D::drawStringShadowAlt(kPadX, ty, "NOVA ENGINE",
-                                            kColHeader, kShadow, 1, 1);
-
-                // Version uses normal set (silver/gray)
-                const char* ver = "v0.1.0  |  OpenGL 4.5";
-                int verW = Text2D::stringWidth(ver);
-                Text2D::drawString(screenW - verW - kPadX, ty, ver, kColVersion);
-            }
-        }
-    }
-
-    // --- Input bar background ---
-    Text2D::drawFill(0, inputY, screenW, kInputH, kBgInput);
-    Text2D::drawFill(0, inputY, screenW, 1, kBorderAmber);
-    Text2D::drawFill(0, consoleH - 2, screenW, 2, kBorderAmber);
+    // ---- Derived pixel positions ----
+    // The console slides down from the top. At slideT=1 the full console
+    // is visible. Each zone is computed from the top down.
+    const int totalH       = (int)(kConH * m_slideT);
+    const int borderTopH   = (int)(kBorderTop * m_slideT);
+    const int headerY      = borderTopH;
+    const int headerH      = (int)(kHeaderH * m_slideT);
+    const int sep1Y        = headerY + headerH;  // separator between header and body
+    const int bodyY        = sep1Y + kBorderSep;
+    const int inputH       = (int)(kInputH * m_slideT);
+    const int sep2Y        = totalH - inputH - kBorderSep; // separator above input
+    const int inputY       = sep2Y + kBorderSep;
+    const int bodyH        = sep2Y - bodyY;
 
     const int cw    = Text2D::charWidth();
     const int ch    = Text2D::charHeight();
     const int lineH = ch + 2;
 
-    // --- Scrollback text area ---
-    const int textTop = headerH + 2 + kPadY;
-    const int textBot = inputY - kPadY;
+    // ---- Text column limits ----
+    const int textAreaW = screenW - kPadX * 2 - kScrollW - kScrollGap;
+    const int maxCharsPerLine = (cw > 0) ? (textAreaW / cw) : 72;
+
+    Text2D::init();
+    Text2D::begin(screenW, screenH);
+
+    // ================================================================
+    //  LAYER 1: BODY BACKGROUND
+    //  Pure black, high opacity. No gradient, no texture.
+    // ================================================================
+    Text2D::drawFill(0, bodyY, screenW, bodyH, kClrBodyBg);
+
+    // ================================================================
+    //  LAYER 2: SCANLINE PASS
+    //  Every other row gets a very faint amber overlay.
+    //  This gives the CRT feel without being distracting.
+    //  Only rendered when slide is nearly complete to avoid visual noise
+    //  during animation.
+    // ================================================================
+    if (m_slideT > 0.90f)
+    {
+        for (int sy = bodyY; sy < sep2Y; sy += 2)
+            Text2D::drawFill(0, sy, screenW - kScrollW - kScrollGap, 1, kClrAmberFaint);
+    }
+
+    // ================================================================
+    //  LAYER 3: HEADER BAR
+    //  Solid black. Title left, version right.
+    // ================================================================
+    if (headerH > 0)
+    {
+        Text2D::drawFill(0, headerY, screenW, headerH, kClrBarBg);
+
+        if (m_slideT > 0.5f && headerH >= ch)
+        {
+            const int ty = headerY + (headerH - ch) / 2;
+
+            // Title — amber alt set so it uses the gold glyphs
+            Text2D::drawStringAlt(kPadX, ty, "NOVA ENGINE", kClrAmber);
+
+            // Version — dim gray, right-aligned, normal set
+            const char* ver = "v0.1.0  |  OpenGL 4.5";
+            int verW = Text2D::stringWidth(ver);
+            Text2D::drawString(screenW - verW - kPadX, ty, ver, kClrVersion);
+        }
+    }
+
+    // ================================================================
+    //  LAYER 4: BORDERS AND SEPARATORS
+    //
+    //  Top border     : 2px amber  (full accent, commands attention)
+    //  Header/body sep: 1px #282828 (barely visible, just a hint)
+    //  Body/input sep : 1px amber  (mirrors top, frames the input zone)
+    //  Bottom edge    : nothing    (console bleeds into game view below)
+    // ================================================================
+
+    // 2px amber top border
+    Text2D::drawFill(0, 0, screenW, borderTopH, kClrBorderHi);
+
+    // 1px dim separator below header
+    Text2D::drawFill(0, sep1Y, screenW, kBorderSep, kClrBorderLo);
+
+    // 1px amber separator above input
+    Text2D::drawFill(0, sep2Y, screenW, kBorderSep, kClrBorderHi);
+
+    // Thin left-edge accent strip: 2px amber that fades out into the body.
+    // This gives the console a subtle "panel" depth without any gradient on
+    // the main background.
+    Text2D::drawFill(0, bodyY, 2, bodyH, kClrAmberDim);
+
+    // ================================================================
+    //  LAYER 5: HEADER INPUT BAR BACKGROUNDS (solid black on top of body)
+    // ================================================================
+    Text2D::drawFill(0, inputY, screenW, inputH, kClrBarBg);
+
+    // ================================================================
+    //  LAYER 6: SCROLLBACK TEXT
+    // ================================================================
+    const int textTop = bodyY + kPadY;
+    const int textBot = sep2Y - kPadY;
     const int textH   = textBot - textTop;
-    const int maxVisible = std::max(0, textH / lineH);
+    const int maxVisible = (lineH > 0) ? std::max(0, textH / lineH) : 0;
 
     const int total    = (int)m_scrollback.size();
     int       endIdx   = total - m_scroll;
@@ -385,123 +470,111 @@ void Console::render(int screenW, int screenH)
     if (startIdx < 0) startIdx = 0;
     if (endIdx   > total) endIdx = total;
 
-    const int textAreaW = screenW - kPadX * 2 - kScrollW - kScrollGap * 2;
-
     for (int i = startIdx; i < endIdx; ++i)
     {
         const ConLine& entry = m_scrollback[i];
         int lineY = textTop + (i - startIdx) * lineH;
         if (lineY + ch > textBot) break;
 
-        const Vec4& color = kColTable[(int)entry.color];
-
-        // Clamp text to visible width
-        int maxChars = textAreaW / cw;
+        // Clamp to visible width
         std::string displayText = entry.text;
-        if ((int)displayText.size() > maxChars && maxChars > 3)
-            displayText = displayText.substr(0, maxChars - 1) + "~";
+        if ((int)displayText.size() > maxCharsPerLine && maxCharsPerLine > 3)
+            displayText = displayText.substr(0, maxCharsPerLine - 1) + "~";
 
-        // Warnings and commands use the alternate (gold) set
-        // Output and other lines use the normal (silver) set
-        bool useAlt = (entry.color == ConColor::Command ||
-                       entry.color == ConColor::Warn    ||
-                       entry.color == ConColor::Accent);
+        const Vec4& col = colorFor(entry.color);
 
-        if (useAlt)
-        {
-            Text2D::drawStringShadowAlt(kPadX, lineY,
-                                        displayText.c_str(), color, kShadow, 1, 1);
-        }
+        if (useAltSet(entry.color))
+            Text2D::drawStringShadowAlt(kPadX + 2, lineY, displayText.c_str(), col, kClrShadow, 1, 1);
         else
-        {
-            Text2D::drawStringShadow(kPadX, lineY,
-                                     displayText.c_str(), color, kShadow, 1, 1);
-        }
+            Text2D::drawStringShadow(kPadX + 2, lineY, displayText.c_str(), col, kClrShadow, 1, 1);
     }
 
-    // --- Scroll bar ---
-    if (total > maxVisible)
+    // ================================================================
+    //  LAYER 7: SCROLLBAR
+    //  3px wide, minimal. Track = near-black, thumb = amber.
+    //  Hidden when all content fits on screen.
+    // ================================================================
+    if (total > maxVisible && maxVisible > 0)
     {
         const int trackX = screenW - kScrollW - 2;
         const int trackY = textTop;
         const int trackH = textH;
 
-        Text2D::drawFill(trackX, trackY, kScrollW, trackH, kScrollTrack);
-        Text2D::drawFill(trackX - 1, trackY, 1, trackH, kBorderDim);
+        // Track
+        Text2D::drawFill(trackX, trackY, kScrollW, trackH, kClrScrollTrk);
 
-        float visFrac  = (float)maxVisible / (float)total;
-        int   thumbH   = std::max(12, (int)(visFrac * (float)trackH));
+        // Thumb
+        float visFrac   = (float)maxVisible / (float)total;
+        int   thumbH    = std::max(8, (int)(visFrac * (float)trackH));
         float scrollFrac = (total > maxVisible)
                            ? (float)m_scroll / (float)(total - maxVisible)
                            : 0.f;
         int thumbY = trackY + (int)((1.0f - scrollFrac) * (float)(trackH - thumbH));
         thumbY = std::max(trackY, std::min(thumbY, trackY + trackH - thumbH));
 
-        Text2D::drawFill(trackX, thumbY, kScrollW, thumbH, kScrollThumb);
-    }
+        Text2D::drawFill(trackX, thumbY, kScrollW, thumbH, kClrScrollThm);
 
-    // Scroll hint
-    if (m_scroll > 0)
-    {
-        const char* hint = "[ SCROLL: PageUp/PageDn ]";
-        int hintW = Text2D::stringWidth(hint);
-        int hintX = (screenW - hintW) / 2;
-        int hintY = textBot - lineH;
-        if (hintY > textTop)
+        // Scroll hint — shown only when scrolled back
+        // Rendered as a simple dim text tag, no box around it
+        if (m_scroll > 0 && m_slideT > 0.85f)
         {
-            Text2D::drawFill(hintX - 4, hintY - 2, hintW + 8, lineH + 2,
-                             Vec4{0.1f, 0.08f, 0.04f, 0.85f});
-            Text2D::drawStringAlt(hintX, hintY, hint,
-                                  Vec4{0.91f, 0.72f, 0.20f, 0.95f});
+            const char* hint = "[ scrolled ]";
+            int hintW = Text2D::stringWidth(hint);
+            int hintX = screenW - hintW - kScrollW - kScrollGap - kPadX;
+            int hintY = textBot - lineH;
+            if (hintY > textTop)
+                Text2D::drawString(hintX, hintY, hint, kClrTextDim);
         }
     }
 
-    // --- Input line ---
+    // ================================================================
+    //  LAYER 8: INPUT LINE
+    //  Prompt character: ">" in amber (alt set)
+    //  Input text: warm off-white, normal set
+    //  Cursor: solid amber block, blinking at 500ms
+    // ================================================================
+    if (inputH >= ch)
     {
-        const int padV = (kInputH - ch) / 2;
+        const int padV = (inputH - ch) / 2;
         const int iy   = inputY + padV;
 
-        // Prompt "] " uses alternate set (gold)
-        const char* prompt = "] ";
-        Text2D::drawStringShadowAlt(kPadX, iy, prompt, kColPrompt, kShadow, 1, 1);
-        int cursorBaseX = kPadX + Text2D::stringWidth(prompt);
+        // Prompt glyph in amber — uses alt set for that gold Q2 look
+        const char* prompt = ">";
+        Text2D::drawStringAlt(kPadX + 2, iy, prompt, kClrAmber);
+        const int promptW  = Text2D::stringWidth(prompt) + cw / 2; // half-char gap after >
+        const int textBaseX = kPadX + 2 + promptW;
 
-        // Input text uses normal set
+        // Input text before cursor
         if (!m_inputBuf.empty())
         {
             std::string before = m_inputBuf.substr(0, (size_t)m_inputPos);
             std::string after  = m_inputBuf.substr((size_t)m_inputPos);
 
-            Text2D::drawString(cursorBaseX, iy, before.c_str(), kColInput);
-
-            int afterX = cursorBaseX + Text2D::stringWidth(before.c_str());
-            Text2D::drawString(afterX, iy, after.c_str(), kColInput);
+            Text2D::drawString(textBaseX, iy, before.c_str(), kClrText);
+            int afterX = textBaseX + Text2D::stringWidth(before.c_str());
+            Text2D::drawString(afterX, iy, after.c_str(), kClrText);
         }
 
-        // Blinking cursor
+        // Blinking cursor — amber solid block
         m_blinkAccum += dt;
         if (m_blinkAccum > 0.50f) { m_blinkAccum = 0.f; m_cursorVis = !m_cursorVis; }
 
         if (m_cursorVis)
         {
             std::string before = m_inputBuf.substr(0, (size_t)m_inputPos);
-            int cx = cursorBaseX + Text2D::stringWidth(before.c_str());
+            int cx = textBaseX + Text2D::stringWidth(before.c_str());
 
-            Text2D::drawFill(cx, iy, cw, ch,
-                             Vec4{0.91f, 0.58f, 0.039f, 0.75f});
+            // Full amber block cursor
+            Text2D::drawFill(cx, iy, cw, ch, kClrAmber);
 
+            // Character under cursor rendered dark so it's readable
             if (m_inputPos < (int)m_inputBuf.size())
             {
                 char buf[2] = { m_inputBuf[m_inputPos], '\0' };
-                Text2D::drawString(cx, iy, buf, Vec4{0.04f, 0.05f, 0.06f, 1.0f});
+                Text2D::drawString(cx, iy, buf, Vec4{0.02f, 0.02f, 0.02f, 1.0f});
             }
         }
     }
-
-    // Left edge amber accent strip
-    Text2D::drawFillGradientH(0, headerH + 2, 3, consoleH - headerH - 2,
-                               Vec4{0.784f, 0.471f, 0.125f, 0.7f},
-                               Vec4{0.784f, 0.471f, 0.125f, 0.0f});
 
     Text2D::end();
 }

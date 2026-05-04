@@ -963,13 +963,13 @@ void Text2D::drawCharInternal(int x, int y, int charCode, Vec4 color, FontSet se
     int gy = charCode / 16;
 
     constexpr float kAtlas = 128.0f;
-    constexpr float kInset = 0.5f / kAtlas;
-    constexpr float kStep  = 8.0f  / kAtlas;
+    constexpr float kStep  = 8.0f / kAtlas;
 
-    float u0 = gx * kStep + kInset;
-    float v0 = gy * kStep + kInset;
-    float u1 = u0 + kStep - kInset * 2.0f;
-    float v1 = v0 + kStep - kInset * 2.0f;
+    // Remove the inset entirely for nearest-neighbor - it was clipping glyph edges
+    float u0 = gx * kStep;
+    float v0 = gy * kStep;
+    float u1 = u0 + kStep;
+    float v1 = v0 + kStep;
 
     float fw = (float)(kGlyphW * s_scale);
     float fh = (float)(kGlyphH * s_scale);
