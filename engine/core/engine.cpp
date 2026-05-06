@@ -462,8 +462,6 @@ void main()
             const std::string bspFile = bspPath;
             const std::string bspDir = dirOf(bspFile);   // .../maps
             const std::string bspRoot = dirOf(bspDir);   // .../<map-pack-root>
-            fprintf(stdout, "DEBUG: bspPath='%s'\n", bspPath);
-            fprintf(stdout, "DEBUG: bspDir='%s', bspRoot='%s'\n", bspDir.c_str(), bspRoot.c_str());
             if (!bspRoot.empty())
             {
                 m_assets.mountDirectory(bspRoot);
@@ -1135,11 +1133,6 @@ void main()
 
                     if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
                     if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
-
-                    // Print current animation to console for debugging
-                    const MD2AnimRange& cur = m_animList[m_currentAnimIdx];
-                    fprintf(stdout, "\r[Anim: idx=%d/%zu range=%d-%d fps=%.0f] ",
-                            m_currentAnimIdx, m_animList.size(), cur.first, cur.last, cur.fps);
                 }
             }
         }
@@ -1211,11 +1204,7 @@ int main(int argc, char *argv[])
             compileMap = argv[i + 1];
     }
     
-    // Debug: print args
-    printf("NovaEngine: argc=%d\n", argc);
-    for (int i = 0; i < argc; ++i)
-        printf("NovaEngine: argv[%d]='%s'\n", i, argv[i]);
-    printf("NovaEngine: bspPath='%s'\n", bspPath);
+    (void)argc; (void)argv; // unused in non-debug builds
     
     if (compileMap)
     {
