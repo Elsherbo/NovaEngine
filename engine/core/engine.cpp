@@ -1152,7 +1152,12 @@ void main()
 
             if (objVisible)
             {
-                Mat4 model = objInst.worldMatrix();
+                // Model matrix transforms (slow Y rotation + scale pulse)
+                Mat4 model = Mat4::translate(objInst.origin);
+                model = model * Mat4::rotate(sin(dt * 0.5f) * 3.14159f * 2.0f, Vec3{0, 1, 0});
+                float pulseScale = 1.0f + sin(dt * 2.0f) * 0.1f;
+                model = model * Mat4::scale(Vec3{pulseScale, pulseScale, pulseScale});
+
                 GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
                 GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
                 GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
