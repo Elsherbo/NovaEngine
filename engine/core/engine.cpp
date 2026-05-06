@@ -161,11 +161,9 @@ in vec4 vColor;
 layout(binding = 0) uniform sampler2D uLightmap;
 layout(binding = 1) uniform sampler2D uDiffuse;
 uniform int uDebugView;
-uniform int uModelMode; // 0=BSP (lightmap), 1=MD2/OBJ (diffuse + directional light)
+uniform int uModelMode; // 0=BSP (lightmap), 1=MD2/OBJ (diffuse + point lighting)
 
-uniform vec3 uSunDir = vec3(0.5, 0.7, 0.3);  // sun direction (world space)
-uniform vec3 uSunColor = vec3(1.0, 0.95, 0.8); // warm sunlight
-uniform vec3 uAmbientColor = vec3(0.15, 0.15, 0.2); // cool ambient
+uniform vec3 uModelLightColor = vec3(1.0); // pre-sampled BSP lightmap color for models
 
 out vec4 fragColor;
 
@@ -173,19 +171,15 @@ void main()
 {
     if (uModelMode != 0)
     {
-        // Model: diffuse texture + directional lighting
+        // Model: diffuse texture sampled BSP lightmap color
         vec3 base = texture(uDiffuse, vUv).rgb * vColor.rgb;
-        vec3 N = normalize(vNormal);
-        float NdotL = max(dot(N, normalize(uSunDir)), 0.0);
-        vec3 lighting = uAmbientColor + uSunColor * NdotL;
-        fragColor = vec4(base * lighting, 1.0);
+        fragColor = vec4(base * uModelLightColor, 1.0);
         return;
     }
 
     // lmUv.x < 0 is the sentinel for "no lightmap" faces.
     if (vLmUv.x < 0.0)
     {
-        // In lightmap-debug modes, highlight missing baked data.
         if (uDebugView != 0)
             fragColor = vec4(1.0, 0.0, 1.0, 1.0);
         else
@@ -193,38 +187,28 @@ void main()
         return;
     }
 
-    // Sample the lightmap atlas and apply Q2 overbright scale.
-    // Q2 stores lightmap values where 128 = "normal brightness", so
-    // multiplying by 2 brings the full dynamic range into [0, 2] -> clamp [0, 1].
-    // The lightmap atlas is RGB8 (linear data — Q2 bakers write linear radiance).
-    // Do NOT gamma-encode here: GL_FRAMEBUFFER_SRGB handles that automatically
-    // on framebuffer write, so all shader math must stay in linear space.
     vec3 lm = texture(uLightmap, vLmUv).rgb;
     lm = clamp(lm * 2.0, 0.0, 1.0);
 
     if (uDebugView == 1)
     {
-        // Grayscale baked-light visualization.
         float g = dot(lm, vec3(0.2126, 0.7152, 0.0722));
         fragColor = vec4(vec3(g), 1.0);
         return;
     }
     if (uDebugView == 2)
     {
-        // Exposure-boosted lightmap view (reveals very dark bakes).
         vec3 boosted = vec3(1.0) - exp(-lm * 10.0);
         fragColor = vec4(boosted, 1.0);
         return;
     }
     if (uDebugView == 3)
     {
-        // UV debug: visualize atlas coordinates directly.
         fragColor = vec4(fract(vLmUv.x), fract(vLmUv.y), 0.0, 1.0);
         return;
     }
 
     vec3 base = texture(uDiffuse, vUv).rgb * vColor.rgb;
-    // Lightmap already encodes actual brightness - no artificial boost needed
     vec3 lit = lm;
     fragColor = vec4(base * lit, 1.0);
 }
@@ -1078,6 +1062,7 @@ void main()
         if (m_bsp)
         {
             m_bsp->setViewProj(viewProj);
+            m_bsp->setViewFrustum(viewProj);
             m_bsp->render(m_renderer, m_camera->getPosition());
         }
         else
@@ -1114,28 +1099,48 @@ void main()
                 // Update animation
                 m_testModelInstance.update(dt);
 
-                // Build model matrix
-                Mat4 model = Mat4::translate(m_testModelInstance.origin);
-                model = model * Mat4::rotate(m_testModelInstance.angles.y, Vec3{0, 1, 0});
-                model = model * Mat4::rotate(m_testModelInstance.angles.x, Vec3{1, 0, 0});
-                model = model * Mat4::rotate(m_testModelInstance.angles.z, Vec3{0, 0, 1});
-                model = model * Mat4::scale(Vec3{m_testModelInstance.scale, m_testModelInstance.scale, m_testModelInstance.scale});
+                // Frustum cull: skip if model is outside view
+                bool md2Visible = true;
+                if (m_bsp && !m_bsp->sphereInFrustum(m_testModelInstance.origin, 40.0f))
+                    md2Visible = false;
 
-                // Set uniforms and render
-                GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
-                GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
-                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
-                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
+                if (md2Visible)
+                {
+                    // Build model matrix
+                    Mat4 model = Mat4::translate(m_testModelInstance.origin);
+                    model = model * Mat4::rotate(m_testModelInstance.angles.y, Vec3{0, 1, 0});
+                    model = model * Mat4::rotate(m_testModelInstance.angles.x, Vec3{1, 0, 0});
+                    model = model * Mat4::rotate(m_testModelInstance.angles.z, Vec3{0, 0, 1});
+                    model = model * Mat4::scale(Vec3{m_testModelInstance.scale, m_testModelInstance.scale, m_testModelInstance.scale});
 
-                m_modelRenderer.renderEntity(m_renderer, m_testModelIndex, m_testModelInstance, m_shader);
+                    // Set uniforms and render
+                    GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
+                    GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
+                    GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
+                    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
+                    if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
 
-                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
-                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
+                    // Source Engine style BSP lightmap sampling
+                    if (m_bsp && modelLightLoc >= 0)
+                    {
+                        Vec3 lightColor = m_bsp->samplePointLighting(m_testModelInstance.origin);
+                        glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
+                    }
+                    else if (modelLightLoc >= 0)
+                    {
+                        glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
+                    }
 
-                // Print current animation to console for debugging
-                const MD2AnimRange& cur = m_animList[m_currentAnimIdx];
-                fprintf(stdout, "\r[Anim: idx=%d/%zu range=%d-%d fps=%.0f] ",
-                        m_currentAnimIdx, m_animList.size(), cur.first, cur.last, cur.fps);
+                    m_modelRenderer.renderEntity(m_renderer, m_testModelIndex, m_testModelInstance, m_shader);
+
+                    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
+                    if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
+
+                    // Print current animation to console for debugging
+                    const MD2AnimRange& cur = m_animList[m_currentAnimIdx];
+                    fprintf(stdout, "\r[Anim: idx=%d/%zu range=%d-%d fps=%.0f] ",
+                            m_currentAnimIdx, m_animList.size(), cur.first, cur.last, cur.fps);
+                }
             }
         }
 
@@ -1147,16 +1152,35 @@ void main()
             objInst.origin.y = m_camera->getPosition().y;
             objInst.scale = 1.0f;
 
-            Mat4 model = objInst.worldMatrix();
-            GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
-            GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
-            if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
-            if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
+            // Frustum cull
+            bool objVisible = true;
+            if (m_bsp && !m_bsp->sphereInFrustum(objInst.origin, 40.0f))
+                objVisible = false;
 
-            m_modelRenderer.renderStatic(m_renderer, m_testOBJIndex, objInst, m_shader);
+            if (objVisible)
+            {
+                Mat4 model = objInst.worldMatrix();
+                GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
+                GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
+                GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
+                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
+                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
 
-            if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
-            if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
+                if (m_bsp && modelLightLoc >= 0)
+                {
+                    Vec3 lightColor = m_bsp->samplePointLighting(objInst.origin);
+                    glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
+                }
+                else if (modelLightLoc >= 0)
+                {
+                    glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
+                }
+
+                m_modelRenderer.renderStatic(m_renderer, m_testOBJIndex, objInst, m_shader);
+
+                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
+                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
+            }
         }
 
 

@@ -341,6 +341,32 @@ namespace nova
             decompressPVS(cluster, out);
         }
 
+        // ---- Source Engine style lightmap sampling -----------------------
+        // Sample BSP lightmap at an arbitrary world-space point.
+        // Returns Vec3::zero() if no lightmap found at that location.
+        // The `radius` parameter controls how many nearby faces are sampled
+        // and averaged (default 64 units, matching Q2 entity lighting origin).
+        Vec3 samplePointLighting(const Vec3& point, float radius = 64.0f) const;
+
+        // ---- View frustum helpers (for model culling) --------------------
+        // Set the current view matrix for frustum extraction (called each frame from render()).
+        void setViewFrustum(const Mat4& vp);
+        // Test if a sphere (point + radius) is inside the current view frustum.
+        // Returns true if no view matrix has been set (conservative).
+        bool sphereInFrustum(const Vec3& center, float radius) const;
+
+        // Accessors for external systems
+        const BSPFace* faces() const { return m_faces.data(); }
+        int faceCount() const { return (int)m_faces.size(); }
+        const Vec3* vertices() const { return m_vertices.data(); }
+        int vertexCount() const { return (int)m_vertices.size(); }
+        const BSPTexInfo* texInfos() const { return m_texInfos.data(); }
+        int texInfoCount() const { return (int)m_texInfos.size(); }
+        const int* surfEdges() const { return m_surfEdges.data(); }
+        int surfEdgeCount() const { return (int)m_surfEdges.size(); }
+        const BSPEdge* edges() const { return m_edges.data(); }
+        int edgeCount() const { return (int)m_edges.size(); }
+
     private:
         bool loadLumps(const uint8_t *data, size_t size);
         int  findLeaf(const Vec3& pos) const;
@@ -431,6 +457,9 @@ namespace nova
         ShaderHandle m_shader = INVALID_SHADER;
         Mat4 m_viewProj = Mat4::identity();
         bool m_hasViewProj = false;
+        // Cached frustum planes for model culling (populated from viewProj)
+        float m_frustum[6][4]{};
+        bool m_hasFrustum = false;
         IRenderBackend* m_gpuBackend = nullptr; // non-owning
 
         // FIX 11: Single lightmap atlas instead of one texture per face.

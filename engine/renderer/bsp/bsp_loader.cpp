@@ -1493,6 +1493,164 @@ void BSPMap::releaseGPU(IRenderBackend *backend)
 }
 
 // ---------------------------------------------------------------------------
+// Frustum extraction and model culling helpers.
+// ---------------------------------------------------------------------------
+void BSPMap::setViewFrustum(const Mat4& vp)
+{
+    auto M = [&](int r, int c) { return vp.col[c][r]; };
+
+    // Plane extraction from viewProj: left(0), right(1), bottom(2), top(3), near(4), far(5)
+    // For each axis i=0,1,2: plane[2*i] = row3 - row[i], plane[2*i+1] = row3 + row[i]
+    for (int i = 0; i < 6; ++i)
+    {
+        int r0 = i / 2, s = (i % 2) * 2 - 1;
+        float nx = M(3,0) + s * M(r0,0);
+        float ny = M(3,1) + s * M(r0,1);
+        float nz = M(3,2) + s * M(r0,2);
+        float nw = M(3,3) + s * M(r0,3);
+        float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-6f)
+        {
+            m_frustum[i][0] = nx / len;
+            m_frustum[i][1] = ny / len;
+            m_frustum[i][2] = nz / len;
+            m_frustum[i][3] = nw / len;
+        }
+    }
+    m_hasFrustum = true;
+}
+
+bool BSPMap::sphereInFrustum(const Vec3& center, float radius) const
+{
+    if (!m_hasFrustum) return true;
+
+    for (int i = 0; i < 6; ++i)
+    {
+        float dist = m_frustum[i][0] * center.x + m_frustum[i][1] * center.y +
+                     m_frustum[i][2] * center.z + m_frustum[i][3];
+        if (dist < -radius)
+            return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Source Engine style lightmap sampling at arbitrary 3D points.
+// Finds the leaf containing `point`, then for each face in that leaf:
+//   1. Project point onto the face's plane
+//   2. Compute lightmap UVs using the face's texinfo axes
+//   3. Sample the raw lightmap data (if available)
+// Returns the average color of all valid samples.
+// ---------------------------------------------------------------------------
+Vec3 BSPMap::samplePointLighting(const Vec3& point, float radius) const
+{
+    (void)radius; // Reserved for future nearby-leaf expansion
+
+    Vec3 accumulatedLight = Vec3::zero();
+    int sampleCount = 0;
+
+    // Find leaf containing the point
+    int leafIdx = findLeaf(point);
+    if (leafIdx < 0 || leafIdx >= (int)m_leaves.size())
+        return Vec3::zero();
+
+    const BSPLeaf& leaf = m_leaves[leafIdx];
+
+    // Iterate all faces in this leaf
+    for (int i = 0; i < leaf.numFaces; ++i)
+    {
+        int leafFaceIdx = leaf.firstFace + i;
+        if (leafFaceIdx < 0 || leafFaceIdx >= (int)m_leafFaces.size())
+            continue;
+
+        int faceIdx = m_leafFaces[leafFaceIdx];
+        if (faceIdx < 0 || faceIdx >= (int)m_faces.size())
+            continue;
+
+        const BSPFace& face = m_faces[faceIdx];
+
+        // Skip faces without lightmaps
+        if (face.lightofs < 0 || face.texinfo < 0 || face.texinfo >= (int)m_texInfos.size())
+            continue;
+
+        const BSPTexInfo& ti = m_texInfos[face.texinfo];
+        const BSPPlane& plane = m_planes[face.plane];
+
+        // Project point onto the face's plane
+        float distToPoint = point.x * plane.normal.x + point.y * plane.normal.y + point.z * plane.normal.z - plane.dist;
+        Vec3 projected = {
+            point.x - distToPoint * plane.normal.x,
+            point.y - distToPoint * plane.normal.y,
+            point.z - distToPoint * plane.normal.z
+        };
+
+        // Compute lightmap UVs at the projected point
+        float worldU = projected.x * ti.uAxis.x + projected.y * ti.uAxis.y + projected.z * ti.uAxis.z + ti.uOffset;
+        float worldV = projected.x * ti.vAxis.x + projected.y * ti.vAxis.y + projected.z * ti.vAxis.z + ti.vOffset;
+
+        float faceU = (worldU - face.lmMins[0]) / 16.0f;
+        float faceV = (worldV - face.lmMins[1]) / 16.0f;
+
+        // Clamp to lightmap bounds
+        if (faceU < 0.0f || faceU >= face.lmWidth || faceV < 0.0f || faceV >= face.lmHeight)
+            continue;
+
+        // Sample lightmap at the computed UV (with bilinear interpolation)
+        int u0 = (int)faceU;
+        int v0 = (int)faceV;
+        int u1 = std::min(u0 + 1, face.lmWidth - 1);
+        int v1 = std::min(v0 + 1, face.lmHeight - 1);
+        float fu = faceU - u0;
+        float fv = faceV - v0;
+
+        // Lightmap data is RGB8, each pixel is 3 bytes
+        int baseOffset = face.lightofs;
+        int lmWidth = face.lmWidth;
+
+        float r00 = m_lightmapData[baseOffset + (v0 * lmWidth + u0) * 3 + 0] / 255.0f;
+        float g00 = m_lightmapData[baseOffset + (v0 * lmWidth + u0) * 3 + 1] / 255.0f;
+        float b00 = m_lightmapData[baseOffset + (v0 * lmWidth + u0) * 3 + 2] / 255.0f;
+
+        float r10 = m_lightmapData[baseOffset + (v0 * lmWidth + u1) * 3 + 0] / 255.0f;
+        float g10 = m_lightmapData[baseOffset + (v0 * lmWidth + u1) * 3 + 1] / 255.0f;
+        float b10 = m_lightmapData[baseOffset + (v0 * lmWidth + u1) * 3 + 2] / 255.0f;
+
+        float r01 = m_lightmapData[baseOffset + (v1 * lmWidth + u0) * 3 + 0] / 255.0f;
+        float g01 = m_lightmapData[baseOffset + (v1 * lmWidth + u0) * 3 + 1] / 255.0f;
+        float b01 = m_lightmapData[baseOffset + (v1 * lmWidth + u0) * 3 + 2] / 255.0f;
+
+        float r11 = m_lightmapData[baseOffset + (v1 * lmWidth + u1) * 3 + 0] / 255.0f;
+        float g11 = m_lightmapData[baseOffset + (v1 * lmWidth + u1) * 3 + 1] / 255.0f;
+        float b11 = m_lightmapData[baseOffset + (v1 * lmWidth + u1) * 3 + 2] / 255.0f;
+
+        // Bilinear interpolation
+        float r = (r00 * (1-fu) * (1-fv) + r10 * fu * (1-fv) + r01 * (1-fu) * fv + r11 * fu * fv);
+        float g = (g00 * (1-fu) * (1-fv) + g10 * fu * (1-fv) + g01 * (1-fu) * fv + g11 * fu * fv);
+        float b = (b00 * (1-fu) * (1-fv) + b10 * fu * (1-fv) + b01 * (1-fu) * fv + b11 * fu * fv);
+
+        accumulatedLight.x += r;
+        accumulatedLight.y += g;
+        accumulatedLight.z += b;
+        sampleCount++;
+    }
+
+    if (sampleCount == 0)
+        return Vec3{0.15f, 0.15f, 0.2f}; // Cool ambient fallback (like Source)
+
+    float invCount = 1.0f / sampleCount;
+    accumulatedLight.x *= invCount;
+    accumulatedLight.y *= invCount;
+    accumulatedLight.z *= invCount;
+
+    // Apply Q2 overbright scale (same as fragment shader: *2 then clamp)
+    accumulatedLight.x = std::min(accumulatedLight.x * 2.0f, 1.0f);
+    accumulatedLight.y = std::min(accumulatedLight.y * 2.0f, 1.0f);
+    accumulatedLight.z = std::min(accumulatedLight.z * 2.0f, 1.0f);
+
+    return accumulatedLight;
+}
+
+// ---------------------------------------------------------------------------
 void BSPMap::render(IRenderBackend *backend, const Vec3& cameraPos)
 {
     if (m_chunks.empty())
