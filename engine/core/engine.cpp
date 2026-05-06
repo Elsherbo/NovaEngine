@@ -73,6 +73,7 @@
 #include "engine/core/cvar.h"
 #include "engine/core/console.h"
 #include "engine/core/text_2d.h"
+#include "engine/renderer/models/md2.h"
 
 // Game-module PlayerController (compiled into nova_engine/nova_player,
 // drives the camera from physics in the engine main loop).
@@ -88,6 +89,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 
 namespace nova
@@ -112,6 +115,9 @@ layout(std140, binding = 0) uniform PerFrame
     float pad0;
 };
 
+uniform mat4 uModelMatrix; // identity for BSP, model transform for MD2/OBJ
+uniform int uModelMode;    // 0=BSP (world space), 1=MD2/OBJ (model space)
+
 out vec2 vUv;
 out vec2 vLmUv;
 out vec3 vNormal;
@@ -122,10 +128,24 @@ void main()
 {
     vUv       = aTexCoord;
     vLmUv     = aLmCoord;
-    vNormal   = aNormal;
-    vWorldPos = aPosition;
     vColor    = aColor;
-    gl_Position = uViewProj * vec4(aPosition, 1.0);
+
+    if (uModelMode != 0)
+    {
+        // Model: transform from model space to world space
+        vec4 worldPos = uModelMatrix * vec4(aPosition, 1.0);
+        vWorldPos = worldPos.xyz;
+        // Transform normal by inverse transpose of model matrix (rotation-only for uniform scale)
+        vNormal = mat3(uModelMatrix) * aNormal;
+        gl_Position = uViewProj * worldPos;
+    }
+    else
+    {
+        // BSP: vertices already in world space
+        vNormal   = aNormal;
+        vWorldPos = aPosition;
+        gl_Position = uViewProj * vec4(aPosition, 1.0);
+    }
 }
 )";
 
@@ -141,11 +161,27 @@ in vec4 vColor;
 layout(binding = 0) uniform sampler2D uLightmap;
 layout(binding = 1) uniform sampler2D uDiffuse;
 uniform int uDebugView;
+uniform int uModelMode; // 0=BSP (lightmap), 1=MD2/OBJ (diffuse + directional light)
+
+uniform vec3 uSunDir = vec3(0.5, 0.7, 0.3);  // sun direction (world space)
+uniform vec3 uSunColor = vec3(1.0, 0.95, 0.8); // warm sunlight
+uniform vec3 uAmbientColor = vec3(0.15, 0.15, 0.2); // cool ambient
 
 out vec4 fragColor;
 
 void main()
 {
+    if (uModelMode != 0)
+    {
+        // Model: diffuse texture + directional lighting
+        vec3 base = texture(uDiffuse, vUv).rgb * vColor.rgb;
+        vec3 N = normalize(vNormal);
+        float NdotL = max(dot(N, normalize(uSunDir)), 0.0);
+        vec3 lighting = uAmbientColor + uSunColor * NdotL;
+        fragColor = vec4(base * lighting, 1.0);
+        return;
+    }
+
     // lmUv.x < 0 is the sentinel for "no lightmap" faces.
     if (vLmUv.x < 0.0)
     {
@@ -206,7 +242,7 @@ void main()
 
     private:
         void update(float dt);
-        void render();
+        void render(float dt);
         void buildDebugScene();
 
         IPlatform *m_platform = nullptr;
@@ -222,6 +258,15 @@ void main()
         // MapLoader, EntityFactory, and the GameModule DLL).
         EntityHandle m_playerEntity;
         GameDLLLoader m_gameDLL;
+
+        // MD2 model rendering
+        ModelRenderer m_modelRenderer;
+        int           m_testModelIndex = -1;   // test MD2 model index
+        MD2Instance   m_testModelInstance;     // persistent animation state
+        int           m_currentAnimIdx = 0;    // current animation index
+        float         m_animTimer = 0.0f;      // time spent in current animation
+        std::vector<MD2AnimRange> m_animList;  // detected animations for cycling
+        int           m_testOBJIndex = -1;      // test OBJ model index
 
         struct PerFrameUBO
         {
@@ -459,6 +504,11 @@ void main()
                 fprintf(stdout, "Assets: mounted Quake2 pak0 '%s'\n", pak0.c_str());
         }
 
+        // ---- Mount assets/ directory for models, fonts, etc. ----
+        // Try mounting relative to the working directory (project root).
+        m_assets.mountDirectory("assets");
+        fprintf(stdout, "Assets: mounted 'assets/' (models, fonts, etc.)\n");
+
         // ---- Entity factory ----
         // Must be called before BSP load so MapLoader::load() finds all spawn functions.
         EntityFactory::init();
@@ -649,6 +699,67 @@ void main()
         // ---- Entity system diagnostics (Acceptance Criteria 5) ----
         fprintf(stdout, "EntityList: sizeof(Entity) = %zu bytes\n", sizeof(Entity));
 
+        // ---- MD2 Model Loading (test) ----
+        // Try loading an MD2 model from assets/models/.
+        {
+            const char* testModels[] = {
+                "models/soldier/mach-body.md2",
+                "models/cobra/cobra.md2",
+                "models/eagle/eagle.md2",
+                "models/Monkey/monkey.md2",
+                "models/raven/raven.md2",
+                "models/snake/snake.md2",
+                "models/warrior/warrior.md2",
+            };
+            for (const char* mp : testModels)
+            {
+                m_testModelIndex = m_modelRenderer.loadMD2Model(m_renderer, &m_assets, mp);
+                if (m_testModelIndex >= 0)
+                {
+                    fprintf(stdout, "Engine: loaded MD2 model '%s' (index %d)\n", mp, m_testModelIndex);
+                    break;
+                }
+            }
+            if (m_testModelIndex < 0)
+                fprintf(stdout, "Engine: no MD2 model found (tried common paths)\n");
+
+            // Set up test model animation once
+            if (m_testModelIndex >= 0 && m_modelRenderer.getMD2Mesh(m_testModelIndex))
+            {
+                const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(m_testModelIndex);
+                const auto& anims = mesh->anims();
+                if (!anims.empty())
+                {
+                    // Copy to vector for indexed access
+                    for (const auto& kv : anims)
+                        m_animList.push_back(kv.second);
+                    m_testModelInstance.setAnim(m_animList[0]);
+                }
+                else
+                {
+                    m_testModelInstance.setAnim(0, mesh->numFrames() - 1, 10.0f);
+                }
+            }
+
+            // Try loading a test OBJ model
+            const char* testOBJs[] = {
+                "models/soldier/mach-body.obj",
+                "models/warrior/warrior.obj",
+                "models/cobra/cobra.obj",
+            };
+            for (const char* op : testOBJs)
+            {
+                m_testOBJIndex = m_modelRenderer.loadOBJModel(m_renderer, &m_assets, op);
+                if (m_testOBJIndex >= 0)
+                {
+                    fprintf(stdout, "Engine: loaded OBJ model '%s' (index %d)\n", op, m_testOBJIndex);
+                    break;
+                }
+            }
+            if (m_testOBJIndex < 0)
+                fprintf(stdout, "Engine: no OBJ model found (tried common paths)\n");
+        }
+
         buildDebugScene();
 
         m_lastTime = (double)SDL_GetPerformanceCounter() / SDL_GetPerformanceFrequency();
@@ -802,7 +913,7 @@ void main()
             }
 
             update((float)dt);
-            render();
+            render((float)dt);
 
             if (dt < targetDt)
             {
@@ -941,7 +1052,7 @@ void main()
 
 
     // -----------------------------------------------------------------------
-    void Engine::render()
+    void Engine::render(float dt)
     {
         m_renderer->clearColor(0.1f, 0.1f, 0.15f, 1.f);
         m_renderer->clearDepth(0.f);
@@ -979,6 +1090,73 @@ void main()
                 m_renderer->bindIndexBuffer(m_debugIndex);
                 m_renderer->drawIndexed(m_debugIndexCount, 0);
             }
+        }
+
+        // ---- MD2 Model Rendering ----
+        if (m_testModelIndex >= 0 && !m_animList.empty())
+        {
+            const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(m_testModelIndex);
+            if (mesh && mesh->numSkins() > 0)
+            {
+                // Cycle to next animation every 3 seconds
+                m_animTimer += dt;
+                if (m_animTimer >= 3.0f)
+                {
+                    m_animTimer = 0.0f;
+                    m_currentAnimIdx = (m_currentAnimIdx + 1) % (int)m_animList.size();
+                    m_testModelInstance.setAnim(m_animList[m_currentAnimIdx]);
+                }
+
+                // Update position: 80 units in front of camera, same height
+                m_testModelInstance.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f;
+                m_testModelInstance.origin.y = m_camera->getPosition().y;
+
+                // Update animation
+                m_testModelInstance.update(dt);
+
+                // Build model matrix
+                Mat4 model = Mat4::translate(m_testModelInstance.origin);
+                model = model * Mat4::rotate(m_testModelInstance.angles.y, Vec3{0, 1, 0});
+                model = model * Mat4::rotate(m_testModelInstance.angles.x, Vec3{1, 0, 0});
+                model = model * Mat4::rotate(m_testModelInstance.angles.z, Vec3{0, 0, 1});
+                model = model * Mat4::scale(Vec3{m_testModelInstance.scale, m_testModelInstance.scale, m_testModelInstance.scale});
+
+                // Set uniforms and render
+                GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
+                GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
+                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
+                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
+
+                m_modelRenderer.renderEntity(m_renderer, m_testModelIndex, m_testModelInstance, m_shader);
+
+                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
+                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
+
+                // Print current animation to console for debugging
+                const MD2AnimRange& cur = m_animList[m_currentAnimIdx];
+                fprintf(stdout, "\r[Anim: idx=%d/%zu range=%d-%d fps=%.0f] ",
+                        m_currentAnimIdx, m_animList.size(), cur.first, cur.last, cur.fps);
+            }
+        }
+
+        // ---- OBJ Model Rendering ----
+        if (m_testOBJIndex >= 0 && m_modelRenderer.getMesh(m_testOBJIndex))
+        {
+            MeshInstance objInst;
+            objInst.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f + m_camera->getRight() * 60.0f;
+            objInst.origin.y = m_camera->getPosition().y;
+            objInst.scale = 1.0f;
+
+            Mat4 model = objInst.worldMatrix();
+            GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
+            GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
+            if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
+            if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
+
+            m_modelRenderer.renderStatic(m_renderer, m_testOBJIndex, objInst, m_shader);
+
+            if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
+            if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
         }
 
 

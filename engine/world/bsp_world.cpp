@@ -173,15 +173,35 @@ const std::vector<uint8_t>& BSPWorld::getPVS(int cluster) const
 }
 
 // ---------------------------------------------------------------------------
-// findLeaf — kept private, only used internally by this translation unit.
-// (clusterForPoint is the public caller.)
+// findLeaf — walks the BSP tree and returns the leaf index containing pos.
+// Returns -1 if out of bounds or in solid.
 // ---------------------------------------------------------------------------
 int BSPWorld::findLeaf(const Vec3& pos) const
 {
-    return clusterForPoint(pos);  // reuse; cluster lookup is identical up to the return value
-    // Note: findLeaf really returns a leafIdx, while clusterForPoint returns cluster.
-    // This member is not used — left here as a named placeholder so the header
-    // declaration compiles.  clusterForPoint is the canonical public path.
+    if (!m_bsp) return -1;
+
+    int nodeIdx = 0;  // root
+    const int nodeCount = m_bsp->nodeCount();
+    const int leafCount = m_bsp->leafCount();
+
+    while (nodeIdx >= 0)
+    {
+        if (nodeIdx >= nodeCount) return -1;
+
+        const BSPNode&  node = m_bsp->nodes()[nodeIdx];
+        const BSPPlane& pl   = m_bsp->planes()[node.plane];
+
+        float d = pos.x * pl.normal.x
+                + pos.y * pl.normal.y
+                + pos.z * pl.normal.z
+                - pl.dist;
+
+        nodeIdx = node.children[d < 0.f ? 1 : 0];
+    }
+
+    const int leafIdx = ~nodeIdx;
+    if (leafIdx < 0 || leafIdx >= leafCount) return -1;
+    return leafIdx;
 }
 
 } // namespace nova

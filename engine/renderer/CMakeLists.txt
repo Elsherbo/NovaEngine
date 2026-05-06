@@ -24,3 +24,15 @@ target_sources(nova_renderer PRIVATE
     bsp/bsp.h
     bsp/bsp_loader.cpp
 )
+
+# MD2 model loader
+target_sources(nova_renderer PRIVATE
+    models/md2.h
+    models/md2_loader.cpp
+)
+
+# Generic mesh + OBJ loader
+target_sources(nova_renderer PRIVATE
+    models/mesh.h
+    models/static_mesh_loader.cpp
+)
