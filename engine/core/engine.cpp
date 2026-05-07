@@ -90,6 +90,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 
 
@@ -615,6 +616,65 @@ void main()
                     fprintf(stdout, "Engine: MapLoader spawned %d entities from BSP lump\n", spawned);
                 }
 
+                // ---- Phase 1: Model Spawner ----
+                // Iterate entities, check for "model" key, load and register with ModelRenderer
+                {
+                    // Cache loaded model paths → model index
+                    std::unordered_map<std::string, int> modelCache;
+
+                    int modelEntityCount = 0;
+                    for (int i = 0; i < g_entityList.maxIndex(); ++i)
+                    {
+                        const Entity* ent = g_entityList.getByIndex(i);
+                        if (!ent) continue;
+
+                        const char* modelPath = ent->getProperty("model");
+                        if (!modelPath || !modelPath[0]) continue;
+
+                        int modelIdx = -1;
+
+                        // Check cache first
+                        auto it = modelCache.find(modelPath);
+                        if (it != modelCache.end())
+                        {
+                            modelIdx = it->second;
+                        }
+                        else
+                        {
+                            // Determine format by extension
+                            std::string path(modelPath);
+                            if (path.size() > 4 && path.substr(path.size() - 4) == ".md2")
+                            {
+                                modelIdx = m_modelRenderer.loadMD2Model(m_renderer, &m_assets, path.c_str());
+                                if (modelIdx >= 0)
+                                    Logger::instance().info("ModelSpawner: loaded MD2 '%s' (index %d)", path.c_str(), modelIdx);
+                            }
+                            else if (path.size() > 4 && path.substr(path.size() - 4) == ".obj")
+                            {
+                                modelIdx = m_modelRenderer.loadOBJModel(m_renderer, &m_assets, path.c_str());
+                                if (modelIdx >= 0)
+                                    Logger::instance().info("ModelSpawner: loaded OBJ '%s' (index %d)", path.c_str(), modelIdx);
+                            }
+                            else
+                            {
+                                Logger::instance().warn("ModelSpawner: unsupported model format '%s'", path.c_str());
+                            }
+
+                            if (modelIdx >= 0)
+                                modelCache[path] = modelIdx;
+                        }
+
+                        if (modelIdx >= 0)
+                        {
+                            m_modelRenderer.registerEntity(i, modelIdx);
+                            ++modelEntityCount;
+                        }
+                    }
+
+                    if (modelEntityCount > 0)
+                        Logger::instance().info("ModelSpawner: registered %d model entities (%zu unique models)", modelEntityCount, modelCache.size());
+                }
+
                 // ---- Notify game module (if DLL is loaded) ----
                 if (IGameModule* game = m_gameDLL.get())
                     game->loadMap(m_bspWorld);
@@ -1075,13 +1135,31 @@ void main()
             }
         }
 
-        // ---- MD2 Model Rendering ----
-        if (m_testModelIndex >= 0 && !m_animList.empty())
+        // ---- Model Rendering (BSP-spawned entities) ----
+        // Sync EntityList transforms to ModelRenderer, then render all
+        if (m_modelRenderer.numModels() > 0)
+        {
+            // Update entity transforms from EntityList
+            for (int i = 0; i < g_entityList.maxIndex(); ++i)
+            {
+                const Entity* ent = g_entityList.getByIndex(i);
+                if (!ent) continue;
+                if (ent->modelIndex == 0 && !ent->hasProperty("model")) continue;
+
+                m_modelRenderer.updateEntity(i, dt, ent->origin, ent->angles);
+            }
+
+            // Render all model entities (with BSP lightmap sampling + frustum culling)
+            Vec3 camPos = m_camera->getPosition();
+            m_modelRenderer.renderAll(m_renderer, m_shader, m_bsp, &camPos);
+        }
+
+        // ---- Hardcoded Test Model (fallback when no BSP entities with models) ----
+        else if (m_testModelIndex >= 0 && !m_animList.empty())
         {
             const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(m_testModelIndex);
             if (mesh && mesh->numSkins() > 0)
             {
-                // Cycle to next animation every 3 seconds
                 m_animTimer += dt;
                 if (m_animTimer >= 3.0f)
                 {
@@ -1090,35 +1168,28 @@ void main()
                     m_testModelInstance.setAnim(m_animList[m_currentAnimIdx]);
                 }
 
-                // Update position: 80 units in front of camera, same height
                 m_testModelInstance.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f;
                 m_testModelInstance.origin.y = m_camera->getPosition().y;
-
-                // Update animation
                 m_testModelInstance.update(dt);
 
-                // Frustum cull: skip if model is outside view
                 bool md2Visible = true;
                 if (m_bsp && !m_bsp->sphereInFrustum(m_testModelInstance.origin, 40.0f))
                     md2Visible = false;
 
                 if (md2Visible)
                 {
-                    // Build model matrix
                     Mat4 model = Mat4::translate(m_testModelInstance.origin);
                     model = model * Mat4::rotate(m_testModelInstance.angles.y, Vec3{0, 1, 0});
                     model = model * Mat4::rotate(m_testModelInstance.angles.x, Vec3{1, 0, 0});
                     model = model * Mat4::rotate(m_testModelInstance.angles.z, Vec3{0, 0, 1});
                     model = model * Mat4::scale(Vec3{m_testModelInstance.scale, m_testModelInstance.scale, m_testModelInstance.scale});
 
-                    // Set uniforms and render
                     GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
                     GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
                     GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
                     if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
                     if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
 
-                    // Source Engine style BSP lightmap sampling
                     if (m_bsp && modelLightLoc >= 0)
                     {
                         Vec3 lightColor = m_bsp->samplePointLighting(m_testModelInstance.origin);
@@ -1137,22 +1208,20 @@ void main()
             }
         }
 
-        // ---- OBJ Model Rendering ----
-        if (m_testOBJIndex >= 0 && m_modelRenderer.getMesh(m_testOBJIndex))
+        // ---- Hardcoded Test OBJ (fallback) ----
+        if (m_modelRenderer.numModels() > 0 && m_testOBJIndex >= 0)
         {
             MeshInstance objInst;
             objInst.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f + m_camera->getRight() * 60.0f;
             objInst.origin.y = m_camera->getPosition().y;
             objInst.scale = 1.0f;
 
-            // Frustum cull
             bool objVisible = true;
             if (m_bsp && !m_bsp->sphereInFrustum(objInst.origin, 40.0f))
                 objVisible = false;
 
             if (objVisible)
             {
-                // Model matrix transforms (slow Y rotation + scale pulse)
                 Mat4 model = Mat4::translate(objInst.origin);
                 model = model * Mat4::rotate(sin(dt * 0.5f) * 3.14159f * 2.0f, Vec3{0, 1, 0});
                 float pulseScale = 1.0f + sin(dt * 2.0f) * 0.1f;

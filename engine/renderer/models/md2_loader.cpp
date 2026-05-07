@@ -9,6 +9,7 @@
 // ============================================================
 
 #include "engine/renderer/models/md2.h"
+#include "engine/renderer/bsp/bsp.h"
 #include "engine/core/image_load.h"
 #include "engine/core/log.h"
 #include <glad/glad.h>
@@ -917,6 +918,7 @@ void ModelRenderer::registerEntity(int entityIndex, int modelIndex)
         m_entities.resize(entityIndex + 1);
 
     m_entities[entityIndex].modelIndex = modelIndex;
+    m_entities[entityIndex].type = m_meshes[modelIndex].type;
     m_entities[entityIndex].instance.skinIndex = 0;
 }
 
@@ -925,9 +927,19 @@ void ModelRenderer::updateEntity(int entityIndex, float dt, const Vec3& origin, 
     if (entityIndex < 0 || entityIndex >= (int)m_entities.size()) return;
 
     EntityRecord& rec = m_entities[entityIndex];
-    rec.instance.origin = origin;
-    rec.instance.angles = angles;
-    rec.instance.update(dt);
+    if (rec.modelIndex < 0) return;
+
+    if (rec.type == ModelType::MD2)
+    {
+        rec.instance.origin = origin;
+        rec.instance.angles = angles;
+        rec.instance.update(dt);
+    }
+    else
+    {
+        rec.staticInstance.origin = origin;
+        rec.staticInstance.angles = angles;
+    }
 }
 
 void ModelRenderer::renderEntity(IRenderBackend* backend, int modelIndex,
@@ -967,14 +979,86 @@ void ModelRenderer::renderStatic(IRenderBackend* backend, int modelIndex,
     entry.mesh->draw(backend);
 }
 
-void ModelRenderer::renderAll(IRenderBackend* backend, ShaderHandle shader) const
+void ModelRenderer::renderAll(IRenderBackend* backend, ShaderHandle shader,
+                               const BSPMap* bsp, const Vec3* cameraPos) const
 {
+    // Set model mode once for all entities
+    GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelMode");
+    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
+
     for (size_t i = 0; i < m_entities.size(); ++i)
     {
         const EntityRecord& rec = m_entities[i];
         if (rec.modelIndex < 0) continue;
-        renderEntity(backend, rec.modelIndex, rec.instance, shader);
+
+        if (rec.type == ModelType::MD2)
+        {
+            // Frustum cull (sphere test with estimated radius)
+            if (bsp && cameraPos)
+            {
+                if (!bsp->sphereInFrustum(rec.instance.origin, 40.0f))
+                    continue;
+            }
+
+            // Build model matrix
+            Mat4 model = Mat4::translate(rec.instance.origin);
+            model = model * Mat4::rotate(rec.instance.angles.y, Vec3{0, 1, 0});
+            model = model * Mat4::rotate(rec.instance.angles.x, Vec3{1, 0, 0});
+            model = model * Mat4::rotate(rec.instance.angles.z, Vec3{0, 0, 1});
+            model = model * Mat4::scale(Vec3{rec.instance.scale, rec.instance.scale, rec.instance.scale});
+
+            GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelMatrix");
+            if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
+
+            // BSP lightmap sampling
+            GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelLightColor");
+            if (modelLightLoc >= 0)
+            {
+                if (bsp)
+                {
+                    Vec3 lightColor = bsp->samplePointLighting(rec.instance.origin);
+                    glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
+                }
+                else
+                {
+                    glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
+                }
+            }
+
+            renderEntity(backend, rec.modelIndex, rec.instance, shader);
+        }
+        else
+        {
+            // Frustum cull for static models
+            if (bsp)
+            {
+                if (!bsp->sphereInFrustum(rec.staticInstance.origin, 40.0f))
+                    continue;
+            }
+
+            // BSP lightmap sampling
+            GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelLightColor");
+            if (modelLightLoc >= 0)
+            {
+                if (bsp)
+                {
+                    Vec3 lightColor = bsp->samplePointLighting(rec.staticInstance.origin);
+                    glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
+                }
+                else
+                {
+                    glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
+                }
+            }
+
+            renderStatic(backend, rec.modelIndex, rec.staticInstance, shader);
+        }
     }
+
+    // Reset model mode
+    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
+    GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelMatrix");
+    if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
 }
 
 } // namespace nova

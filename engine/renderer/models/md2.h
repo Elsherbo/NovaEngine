@@ -24,6 +24,9 @@
 namespace nova
 {
 
+// Forward declarations
+class BSPMap;
+
 // ---- MD2 vertex layout (44 bytes, identical stride to kLayoutBSP) ----
 // Models set lmUV = (-1, -1) sentinel and color = white (255,255,255,255).
 struct MD2VertexPacked
@@ -244,8 +247,10 @@ public:
     void renderStatic(IRenderBackend* backend, int modelIndex,
                       const MeshInstance& instance, ShaderHandle shader) const;
 
-    // Render all entities (batched by mesh for efficiency).
-    void renderAll(IRenderBackend* backend, ShaderHandle shader) const;
+    // Render all entities (handles uniforms, lightmap sampling, frustum culling internally).
+    // bsp and cameraPos are optional for BSP lightmap sampling and frustum culling.
+    void renderAll(IRenderBackend* backend, ShaderHandle shader,
+                   const BSPMap* bsp = nullptr, const Vec3* cameraPos = nullptr) const;
 
     // Register an entity for rendering (called by EntityFactory or game code).
     void registerEntity(int entityIndex, int modelIndex);
@@ -267,7 +272,9 @@ private:
     struct EntityRecord
     {
         int modelIndex = -1;
+        ModelType type = ModelType::MD2;
         MD2Instance instance;
+        MeshInstance staticInstance; // for Static/OBJ models
     };
 
     std::vector<ModelEntry>       m_meshes;

@@ -52,6 +52,12 @@ public:
     EntityHandle findByClassname(const char *classname);
     void findInAABB(const AABB& box, EntityHandle *out, int *outCount, int maxCount);
 
+    // Direct index access (for model spawner)
+    Entity* getByIndex(int index);
+    const Entity* getByIndex(int index) const;
+    bool isActiveIndex(int index) const;
+    static constexpr int maxIndex() { return (int)kMaxEntities; }
+
 private:
     Entity   m_entities[kMaxEntities];
     uint8_t  m_active[kMaxEntities];    // 1 = active, 0 = free

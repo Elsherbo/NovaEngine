@@ -252,4 +252,26 @@ void EntityList::findInAABB(const AABB& box, EntityHandle *out, int *outCount, i
     *outCount = count;
 }
 
+// -----------------------------------------------------------------------
+// Direct index access (for model spawner)
+// -----------------------------------------------------------------------
+Entity* EntityList::getByIndex(int index)
+{
+    if (index < 0 || index >= (int)kMaxEntities || !m_active[index])
+        return nullptr;
+    return &m_entities[index];
+}
+
+const Entity* EntityList::getByIndex(int index) const
+{
+    if (index < 0 || index >= (int)kMaxEntities || !m_active[index])
+        return nullptr;
+    return &m_entities[index];
+}
+
+bool EntityList::isActiveIndex(int index) const
+{
+    return index >= 0 && index < (int)kMaxEntities && m_active[index] != 0;
+}
+
 } // namespace nova
