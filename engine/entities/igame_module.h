@@ -25,6 +25,7 @@ class IAudioSystem;
 class INetworkSystem;
 struct IPlatform;
 class IWorld;   // world abstraction — game DLL never needs BSPMap directly
+struct EngineAPI; // engine services exposed to game DLL
 
 // -----------------------------------------------------------------------
 // IGameModule - pure virtual interface
@@ -38,6 +39,10 @@ public:
     // ---- Lifecycle ----
     virtual bool init() = 0;
     virtual void shutdown() = 0;
+
+    // ---- Engine API bridge ----
+    // Called by engine before init() so game DLL can access engine services.
+    virtual void setEngineAPI(EngineAPI* api) = 0;
 
     // ---- Map loading ----
     // Called by the engine after the world is ready.

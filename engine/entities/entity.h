@@ -19,6 +19,9 @@
 namespace nova
 {
 
+// Forward declaration (defined in entity_class.h)
+class EntityClass;
+
 // -----------------------------------------------------------------------
 // Entity flags (from Quake 2)
 // -----------------------------------------------------------------------
@@ -78,8 +81,9 @@ struct Entity
     Vec3 maxs;         // AABB max corner
 
     // ---- Rendering ----
-    int    modelIndex = 0;    // g肺model index (0 = none)
+    int    modelIndex = 0;    // gロmodel index (0 = none)
     int    skin = 0;          // skin number
+    char   animRequest[32];   // pending anim name set by game before model loaded
 
     // ---- Physics ----
     float gravity = 1.0f;    // gravity multiplier
@@ -94,6 +98,9 @@ struct Entity
     // ---- Team ----
     EntityHandle teamMaster;   // for doors/buttons
     EntityLink link;        // chain of linked entities
+
+    // ---- Entity Class (virtual dispatch hooks) ----
+    class EntityClass* entityClass = nullptr;
 
     // ---- Callbacks ----
     // These are function pointers set by game code

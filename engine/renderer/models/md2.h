@@ -153,6 +153,10 @@ struct MD2Mesh : public IMesh
     // Frame vertex count (from header, may differ from m_numVerts if expanded).
     int frameVertCount() const { return m_frameVertCount; }
 
+    // Interpolate two frames and scatter to split vertices (called each frame if animating).
+    void interpolateFrame(int frameA, int frameB, float t,
+                          MD2VertexPacked* outVerts, int outVertCount) const;
+
     // Skin texture handles (loaded from skin files referenced in MD2).
     TextureHandle  skinTexture(int i) const { return m_skinTextures[i]; }
     SamplerHandle  skinSampler(int i) const { return m_skinSamplers[i]; }
@@ -165,6 +169,8 @@ struct MD2Mesh : public IMesh
 private:
     void buildFrameData(const uint8_t* frameBytes, int frameIdx,
                         MD2VertexPacked* outVerts, int frameVertCount = -1) const;
+    void buildFrameDataSplit(const uint8_t* frameBytes, int frameIdx,
+                             MD2VertexPacked* outVerts, int frameVertCount) const;
     void detectAnimations();
 
     BufferHandle    m_vertexBuffer = INVALID_BUFFER;
@@ -185,6 +191,11 @@ private:
 
     // Per-vertex normalized UVs [0,1] (constant across all frames).
     std::vector<float> m_uvs; // 2 floats per vertex
+
+    // Split vertex mapping: for each original frame vertex, list of GPU split indices.
+    // Used during frame interpolation to duplicate vertex positions across UV splits.
+    struct SplitInfo { int splitIdx; int stIdx; };
+    std::vector<std::vector<SplitInfo>> m_splitInfo;
 
     // Skin textures
     std::vector<TextureHandle> m_skinTextures;
@@ -257,6 +268,16 @@ public:
 
     // Update an entity's animation state (called each frame before render).
     void updateEntity(int entityIndex, float dt, const Vec3& origin, const Vec3& angles);
+
+    // Set entity animation by name (e.g., "stand", "run"). Auto-detects from frame names.
+    void setEntityAnim(int entityIndex, const char* animName);
+
+    // Set entity animation by explicit frame range.
+    void setEntityAnimRange(int entityIndex, int first, int last, float fps);
+
+    // Get mutable access to entity instance (for origin, angles, scale, animation control).
+    MD2Instance* getMD2Instance(int entityIndex);
+    MeshInstance* getStaticInstance(int entityIndex);
 
     int numModels() const { return (int)m_meshes.size(); }
 

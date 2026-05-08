@@ -30,6 +30,7 @@ public:
     // ---- IGameModule ----
     bool init() override;
     void shutdown() override;
+    void setEngineAPI(EngineAPI* api) override;
     void think(float dt) override;
     void loadMap(IWorld* world) override;
 
@@ -74,6 +75,7 @@ private:
     IPhysicsWorld* m_physics = nullptr;
     IAudioSystem* m_audio = nullptr;
     INetworkSystem* m_network = nullptr;
+    EngineAPI* m_engineAPI = nullptr;
 
     EntityHandle m_playerHandle = {};
 

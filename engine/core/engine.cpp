@@ -74,6 +74,8 @@
 #include "engine/core/console.h"
 #include "engine/core/text_2d.h"
 #include "engine/renderer/models/md2.h"
+#include "engine/core/engine_api.h"
+#include "engine/entities/entity_class.h"
 
 // Game-module PlayerController (compiled into nova_engine/nova_player,
 // drives the camera from physics in the engine main loop).
@@ -246,12 +248,6 @@ void main()
 
         // MD2 model rendering
         ModelRenderer m_modelRenderer;
-        int           m_testModelIndex = -1;   // test MD2 model index
-        MD2Instance   m_testModelInstance;     // persistent animation state
-        int           m_currentAnimIdx = 0;    // current animation index
-        float         m_animTimer = 0.0f;      // time spent in current animation
-        std::vector<MD2AnimRange> m_animList;  // detected animations for cycling
-        int           m_testOBJIndex = -1;      // test OBJ model index
 
         struct PerFrameUBO
         {
@@ -510,6 +506,100 @@ void main()
             std::string dllPath = std::string(gameDir) + "/nova_game.dll";
             if (m_gameDLL.load(dllPath.c_str()))
             {
+                // Wire ModelRenderer callbacks into EngineAPI before game init.
+                static ModelRenderer* s_pMR = &m_modelRenderer;
+                static IRenderBackend* s_pR = m_renderer;
+                static AssetFS*        s_pA = &m_assets;
+
+                EngineAPI_setModelRenderer(
+                    s_pMR,
+                    [](int idx, const char* name) -> bool {
+                        extern EntityList g_entityList;
+                        if (idx >= 0 && idx < g_entityList.maxIndex())
+                        {
+                            Entity* ent = g_entityList.getByIndex(idx);
+                            if (ent)
+                            {
+                                std::strncpy(ent->animRequest, name, sizeof(ent->animRequest) - 1);
+                                ent->animRequest[sizeof(ent->animRequest) - 1] = '\0';
+                            }
+                        }
+                        s_pMR->setEntityAnim(idx, name); return true;
+                    },
+                    [](int idx, int first, int last, float fps) {
+                        s_pMR->setEntityAnimRange(idx, first, last, fps);
+                    },
+                    [](int idx) -> Vec3* {
+                        auto* inst = s_pMR->getMD2Instance(idx);
+                        return inst ? &inst->origin : nullptr;
+                    },
+                    [](int idx) -> Vec3* {
+                        auto* inst = s_pMR->getMD2Instance(idx);
+                        return inst ? &inst->angles : nullptr;
+                    },
+                    [](void* entityClass, const char* classname) {
+                        extern EntityClassRegistry g_entityClasses;
+                        g_entityClasses.registerClass(static_cast<EntityClass*>(entityClass));
+                        fprintf(stdout, "[EngineAPI] registered entity class '%s'\n", classname);
+                    }
+                );
+
+                EngineAPI_setEntityOps(
+                    [](const char* classname, const Vec3& origin, const char* modelPath) -> EntityHandle {
+                        extern EntityList g_entityList;
+                        EntityHandle h = g_entityList.create(classname);
+                        if (!h.isValid()) return h;
+                        Entity* e = g_entityList.get(h);
+                        if (!e) return h;
+                        e->origin = origin;
+                        std::string normPath(modelPath);
+                        for (char& c : normPath) if (c == '\\') c = '/';
+                        e->setProperty("model", normPath);
+                        int modelIdx = -1;
+                        if (normPath.size() > 4 && normPath.substr(normPath.size() - 4) == ".md2")
+                            modelIdx = s_pMR->loadMD2Model(s_pR, s_pA, normPath.c_str());
+                        else if (normPath.size() > 4 && normPath.substr(normPath.size() - 4) == ".obj")
+                            modelIdx = s_pMR->loadOBJModel(s_pR, s_pA, normPath.c_str());
+                        if (modelIdx >= 0)
+                        {
+                            s_pMR->registerEntity(h.index(), modelIdx);
+                            if (const MD2Mesh* mesh = s_pMR->getMD2Mesh(modelIdx))
+                            {
+                                if (mesh->findAnim("stand"))
+                                    s_pMR->setEntityAnim(h.index(), "stand");
+                                else if (mesh->findAnim("idle"))
+                                    s_pMR->setEntityAnim(h.index(), "idle");
+                                else
+                                    s_pMR->setEntityAnimRange(h.index(), 0, mesh->numFrames() - 1, 10.0f);
+                            }
+                            Logger::instance().info("EngineAPI: created model entity[%d] '%s' model='%s'",
+                                                    h.index(), classname, normPath.c_str());
+                        }
+                        g_entityList.finalize(h);
+                        return h;
+                    },
+                    [](EntityHandle handle, const Vec3& origin) {
+                        extern EntityList g_entityList;
+                        Entity* e = g_entityList.get(handle);
+                        if (e) e->origin = origin;
+                    },
+                    [](EntityHandle handle) -> Vec3 {
+                        extern EntityList g_entityList;
+                        const Entity* e = g_entityList.get(handle);
+                        return e ? e->origin : Vec3::zero();
+                    },
+                    [](const char* classname) -> EntityHandle {
+                        extern EntityList g_entityList;
+                        return g_entityList.findByClassname(classname);
+                    }
+                );
+
+                if (IGameModule* game = m_gameDLL.get())
+                {
+                    game->setEngineAPI(g_engineAPI);
+                    game->init();
+                }
+
                 log.info("Engine: game DLL loaded");
                 fprintf(stdout, "Engine: game DLL ready\n");
             }
@@ -668,6 +758,27 @@ void main()
                         {
                             m_modelRenderer.registerEntity(i, modelIdx);
                             ++modelEntityCount;
+
+                            bool hasPendingAnim = (ent->animRequest[0] != '\0');
+                            if (hasPendingAnim)
+                            {
+                                m_modelRenderer.setEntityAnim(i, ent->animRequest);
+                                Logger::instance().info("ModelSpawner: entity[%d] applied pending anim='%s'", i, ent->animRequest);
+                            }
+
+                            if (!hasPendingAnim)
+                            {
+                                const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(modelIdx);
+                                if (mesh)
+                                {
+                                    if (mesh->findAnim("stand"))
+                                        m_modelRenderer.setEntityAnim(i, "stand");
+                                    else if (mesh->findAnim("idle"))
+                                        m_modelRenderer.setEntityAnim(i, "idle");
+                                    else
+                                        m_modelRenderer.setEntityAnimRange(i, 0, mesh->numFrames() - 1, 10.0f);
+                                }
+                            }
                         }
                     }
 
@@ -740,67 +851,6 @@ void main()
 
         // ---- Entity system diagnostics (Acceptance Criteria 5) ----
         fprintf(stdout, "EntityList: sizeof(Entity) = %zu bytes\n", sizeof(Entity));
-
-        // ---- MD2 Model Loading (test) ----
-        // Try loading an MD2 model from assets/models/.
-        {
-            const char* testModels[] = {
-                "models/soldier/mach-body.md2",
-                "models/cobra/cobra.md2",
-                "models/eagle/eagle.md2",
-                "models/Monkey/monkey.md2",
-                "models/raven/raven.md2",
-                "models/snake/snake.md2",
-                "models/warrior/warrior.md2",
-            };
-            for (const char* mp : testModels)
-            {
-                m_testModelIndex = m_modelRenderer.loadMD2Model(m_renderer, &m_assets, mp);
-                if (m_testModelIndex >= 0)
-                {
-                    fprintf(stdout, "Engine: loaded MD2 model '%s' (index %d)\n", mp, m_testModelIndex);
-                    break;
-                }
-            }
-            if (m_testModelIndex < 0)
-                fprintf(stdout, "Engine: no MD2 model found (tried common paths)\n");
-
-            // Set up test model animation once
-            if (m_testModelIndex >= 0 && m_modelRenderer.getMD2Mesh(m_testModelIndex))
-            {
-                const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(m_testModelIndex);
-                const auto& anims = mesh->anims();
-                if (!anims.empty())
-                {
-                    // Copy to vector for indexed access
-                    for (const auto& kv : anims)
-                        m_animList.push_back(kv.second);
-                    m_testModelInstance.setAnim(m_animList[0]);
-                }
-                else
-                {
-                    m_testModelInstance.setAnim(0, mesh->numFrames() - 1, 10.0f);
-                }
-            }
-
-            // Try loading a test OBJ model
-            const char* testOBJs[] = {
-                "models/soldier/mach-body.obj",
-                "models/warrior/warrior.obj",
-                "models/cobra/cobra.obj",
-            };
-            for (const char* op : testOBJs)
-            {
-                m_testOBJIndex = m_modelRenderer.loadOBJModel(m_renderer, &m_assets, op);
-                if (m_testOBJIndex >= 0)
-                {
-                    fprintf(stdout, "Engine: loaded OBJ model '%s' (index %d)\n", op, m_testOBJIndex);
-                    break;
-                }
-            }
-            if (m_testOBJIndex < 0)
-                fprintf(stdout, "Engine: no OBJ model found (tried common paths)\n");
-        }
 
         buildDebugScene();
 
@@ -1136,120 +1186,21 @@ void main()
         }
 
         // ---- Model Rendering (BSP-spawned entities) ----
-        // Sync EntityList transforms to ModelRenderer, then render all
         if (m_modelRenderer.numModels() > 0)
         {
-            // Update entity transforms from EntityList
             for (int i = 0; i < g_entityList.maxIndex(); ++i)
             {
                 const Entity* ent = g_entityList.getByIndex(i);
                 if (!ent) continue;
-                if (ent->modelIndex == 0 && !ent->hasProperty("model")) continue;
+                if (!ent->hasProperty("model")) continue;
 
-                m_modelRenderer.updateEntity(i, dt, ent->origin, ent->angles);
+                Vec3 glOrigin = {ent->origin.x, ent->origin.z, -ent->origin.y};
+                m_modelRenderer.updateEntity(i, dt, glOrigin, ent->angles);
             }
 
-            // Render all model entities (with BSP lightmap sampling + frustum culling)
             Vec3 camPos = m_camera->getPosition();
             m_modelRenderer.renderAll(m_renderer, m_shader, m_bsp, &camPos);
         }
-
-        // ---- Hardcoded Test Model (fallback when no BSP entities with models) ----
-        else if (m_testModelIndex >= 0 && !m_animList.empty())
-        {
-            const MD2Mesh* mesh = m_modelRenderer.getMD2Mesh(m_testModelIndex);
-            if (mesh && mesh->numSkins() > 0)
-            {
-                m_animTimer += dt;
-                if (m_animTimer >= 3.0f)
-                {
-                    m_animTimer = 0.0f;
-                    m_currentAnimIdx = (m_currentAnimIdx + 1) % (int)m_animList.size();
-                    m_testModelInstance.setAnim(m_animList[m_currentAnimIdx]);
-                }
-
-                m_testModelInstance.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f;
-                m_testModelInstance.origin.y = m_camera->getPosition().y;
-                m_testModelInstance.update(dt);
-
-                bool md2Visible = true;
-                if (m_bsp && !m_bsp->sphereInFrustum(m_testModelInstance.origin, 40.0f))
-                    md2Visible = false;
-
-                if (md2Visible)
-                {
-                    Mat4 model = Mat4::translate(m_testModelInstance.origin);
-                    model = model * Mat4::rotate(m_testModelInstance.angles.y, Vec3{0, 1, 0});
-                    model = model * Mat4::rotate(m_testModelInstance.angles.x, Vec3{1, 0, 0});
-                    model = model * Mat4::rotate(m_testModelInstance.angles.z, Vec3{0, 0, 1});
-                    model = model * Mat4::scale(Vec3{m_testModelInstance.scale, m_testModelInstance.scale, m_testModelInstance.scale});
-
-                    GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
-                    GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
-                    GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
-                    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
-                    if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
-
-                    if (m_bsp && modelLightLoc >= 0)
-                    {
-                        Vec3 lightColor = m_bsp->samplePointLighting(m_testModelInstance.origin);
-                        glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
-                    }
-                    else if (modelLightLoc >= 0)
-                    {
-                        glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
-                    }
-
-                    m_modelRenderer.renderEntity(m_renderer, m_testModelIndex, m_testModelInstance, m_shader);
-
-                    if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
-                    if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
-                }
-            }
-        }
-
-        // ---- Hardcoded Test OBJ (fallback) ----
-        if (m_modelRenderer.numModels() > 0 && m_testOBJIndex >= 0)
-        {
-            MeshInstance objInst;
-            objInst.origin = m_camera->getPosition() + m_camera->getForward() * 80.0f + m_camera->getRight() * 60.0f;
-            objInst.origin.y = m_camera->getPosition().y;
-            objInst.scale = 1.0f;
-
-            bool objVisible = true;
-            if (m_bsp && !m_bsp->sphereInFrustum(objInst.origin, 40.0f))
-                objVisible = false;
-
-            if (objVisible)
-            {
-                Mat4 model = Mat4::translate(objInst.origin);
-                model = model * Mat4::rotate(sin(dt * 0.5f) * 3.14159f * 2.0f, Vec3{0, 1, 0});
-                float pulseScale = 1.0f + sin(dt * 2.0f) * 0.1f;
-                model = model * Mat4::scale(Vec3{pulseScale, pulseScale, pulseScale});
-
-                GLint modelModeLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMode");
-                GLint modelMatrixLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelMatrix");
-                GLint modelLightLoc = glGetUniformLocation(static_cast<GLuint>(m_shader), "uModelLightColor");
-                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 1);
-                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, model.data());
-
-                if (m_bsp && modelLightLoc >= 0)
-                {
-                    Vec3 lightColor = m_bsp->samplePointLighting(objInst.origin);
-                    glUniform3f(modelLightLoc, lightColor.x, lightColor.y, lightColor.z);
-                }
-                else if (modelLightLoc >= 0)
-                {
-                    glUniform3f(modelLightLoc, 1.0f, 1.0f, 1.0f);
-                }
-
-                m_modelRenderer.renderStatic(m_renderer, m_testOBJIndex, objInst, m_shader);
-
-                if (modelModeLoc >= 0) glUniform1i(modelModeLoc, 0);
-                if (modelMatrixLoc >= 0) glUniformMatrix4fv(modelMatrixLoc, 1, GL_FALSE, Mat4::identity().data());
-            }
-        }
-
 
         // ---- Console overlay (renders on top of everything) ----
         if (m_console)

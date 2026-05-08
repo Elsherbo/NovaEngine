@@ -1552,7 +1552,7 @@ Vec3 BSPMap::samplePointLighting(const Vec3& point, float radius) const
     // Find leaf containing the point
     int leafIdx = findLeaf(point);
     if (leafIdx < 0 || leafIdx >= (int)m_leaves.size())
-        return Vec3::zero();
+        return Vec3{0.2f, 0.2f, 0.2f}; // dim ambient fallback (prevents pitch black outside BSP)
 
     const BSPLeaf& leaf = m_leaves[leafIdx];
 

@@ -3,9 +3,13 @@ LoadBSPFile: 'test.bsp'
 BSP is version Quake II BSP IBSP:38
 using gamedir: 'D:\coding\cpp\novaEngine\assets'
 WARNING: failed to find basedir 'D:\coding\cpp\novaEngine\baseq2'
+WARNING: test.bsp[line 34]: Unrecognised string escape - \s
+WARNING: test.bsp[line 34]: Unrecognised string escape - \m
 Loading extended texinfo flags from test.texinfo.json...
 Loading extended content flags from test.content.json...
-7 entities read, 5 are lights.
+WARNING: test.bsp[line 34]: Unrecognised string escape - \s
+WARNING: test.bsp[line 34]: Unrecognised string escape - \m
+9 entities read, 5 are lights.
 
 --- Options Summary ---
     "range" was set to "1.000000" (from game target)
@@ -29,12 +33,12 @@ SetupLights: 5 after jittering
 Final count: 5 lights, 0 suns in use.
 0 surface light points in use.
 map uses color: true
-lightmap size (total): 63588
+lightmap size (total): 64224
 Lighting Completed.
 
 0 switchable light styles (32 max)
 Writing test.bsp as Quake II BSP IBSP:38
-0.069s seconds elapsed
+0.061s seconds elapsed
 0 empty lightmaps
 
 

@@ -7,6 +7,8 @@ add_library(nova_entities STATIC
     entity.h
     entity_list.h
     entity_list.cpp
+    entity_class.h
+    entity_class.cpp
     entity_factory.h
     entity_factory.cpp
     property_store.h
@@ -23,4 +25,4 @@ target_include_directories(nova_entities PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../platform
 )
 
-target_link_libraries(nova_entities nova_core nova_renderer)
+target_link_libraries(nova_entities PUBLIC nova_core PRIVATE nova_renderer)

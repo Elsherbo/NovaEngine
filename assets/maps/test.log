@@ -11,14 +11,16 @@ Output file: D:\coding\cpp\novaEngine\assets\maps\test.bsp
 using gamedir: 'D:\coding\cpp\novaEngine\assets'
 WARNING: failed to find basedir 'D:\coding\cpp\novaEngine\baseq2'
 WARNING: Couldn't locate texture for skip
-      7 entities
+WARNING: test.map[line 485]: Unrecognised string escape - \s
+WARNING: test.map[line 485]: Unrecognised string escape - \m
+      9 entities
       9 unique textures
-    155 texinfos
-    114 unique planes
+    159 texinfos
+    116 unique planes
 
 INFO: world extents calculated to 1944 units
-     49 brushes
-    294 sides
+     50 brushes
+    300 sides
 
 Processing map...
     49 SOLID brushes
@@ -87,25 +89,25 @@ Writing test.bsp as Quake II BSP IBSP:38
 Wrote test.bsp
 
 count   lump name    byte size 
-      1 models               48
-     97 planes             1940
-    301 vertexes           3612
-     61 nodes              1708
-    101 texinfos           7676
-    255 faces              5100
-     63 leafs              1764
-    333 leaffaces           666
-     55 leafbrushes         110
-    557 edges              2228
-   1112 surfedges          4448
-     49 brushes             588
-    294 brushsides         1176
+      2 models               96
+     99 planes             1980
+    309 vertexes           3708
+     67 nodes              1876
+    105 texinfos           7980
+    261 faces              5220
+     70 leafs              1960
+    339 leaffaces           678
+     56 leafbrushes         112
+    569 edges              2276
+   1136 surfedges          4544
+     50 brushes             600
+    300 brushsides         1200
       2 areas                16
       1 areaportals           8
         lightdata             0
         visdata               0
-        entdata             375
+        entdata             560
 
-0.071s seconds elapsed
+0.079s seconds elapsed
 
 

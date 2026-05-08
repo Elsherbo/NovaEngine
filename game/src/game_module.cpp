@@ -10,8 +10,13 @@
 #include "engine/entities/entity.h"
 #include "engine/entities/entity_factory.h"
 #include "engine/entities/map_loader.h"
+#include "engine/entities/entity_class.h"
 #include "engine/world/iworld.h"
 #include "engine/core/log.h"
+#include "engine/core/engine_api.h"
+#include "engine/core/math/vec.h"
+
+#include "game_entity_classes.h"
 
 #include <cstring>
 #include <cstdio>
@@ -39,6 +44,14 @@ GameModule::~GameModule()
 }
 
 // -----------------------------------------------------------------------
+// setEngineAPI - receive engine services bridge
+// -----------------------------------------------------------------------
+void GameModule::setEngineAPI(EngineAPI* api)
+{
+    m_engineAPI = api;
+}
+
+// -----------------------------------------------------------------------
 // init - initialize game state
 // -----------------------------------------------------------------------
 bool GameModule::init()
@@ -52,6 +65,9 @@ bool GameModule::init()
         m_ammo[i] = 0;
 
     m_weapons = 0;
+
+    // Register game-specific entity classes with the engine registry
+    registerGameEntityClasses(m_engineAPI);
 
     GAME_INFO("GameModule: ready");
     return true;
@@ -78,6 +94,16 @@ void GameModule::loadMap(IWorld* world)
     // Use this hook to register game-specific callbacks on spawned entities,
     // set up game state, wire AI, etc.
     GAME_INFO("GameModule: world loaded — wiring game logic...");
+
+    // Create a moving platform as a demonstration
+    if (m_engineAPI)
+    {
+        // Platform spawns near the player deathmatch spawn, moves up 128 units
+        Vec3 platOrigin = {-700.0f, -168.0f, 112.0f};  // Q2 Y-up coords
+        m_engineAPI->createModelEntity("func_plat", platOrigin, "models/platform/platform.obj");
+        GAME_INFO("GameModule: created func_plat at (%.1f, %.1f, %.1f)",
+                  platOrigin.x, platOrigin.y, platOrigin.z);
+    }
 
     // Example: find the worldspawn and read map properties
     // find player spawns, register think callbacks on items, etc.

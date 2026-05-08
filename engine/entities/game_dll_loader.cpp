@@ -121,14 +121,8 @@ bool GameDLLLoader::load(const char* path)
         return false;
     }
 
-    if (!m_module->init())
-    {
-        fprintf(stderr, "GameDLLLoader: module init failed\n");
-        m_module->shutdown();
-        m_module = nullptr;
-        unload();
-        return false;
-    }
+    // NOTE: init() is no longer called here — the engine calls it after
+    // wiring up EngineAPI so game code has access to engine services.
 
     fprintf(stdout, "GameDLLLoader: loaded '%s'\n", path);
     return true;

@@ -364,38 +364,63 @@ bool MD2Mesh::load(IRenderBackend* backend, AssetFS* assets, const char* md2Path
                             md2Path, m_numVerts, frameVertexCount, m_numTris, m_numFrames,
                             hdr->numST, hdr->numSkins);
 
-    // Build per-vertex UVs by walking all triangles.
-    // MD2 UVs are per-triangle-vertex (numST != numVerts), so we scan
-    // every triangle and assign the first ST reference found for each vertex.
-    m_uvs.resize(m_numVerts * 2);
-    std::vector<bool> hasUV(m_numVerts, false);
+    // MD2 UVs are per-triangle-vertex: each triangle corner has its own (vertexIndex, stIndex).
+    // A single mesh vertex can be shared by multiple triangles with DIFFERENT UVs.
+    // We must split vertices so each unique (vertexIdx, stIdx) pair becomes a unique GPU vertex.
+    struct SplitVertKey
+    {
+        int vertIdx;
+        int stIdx;
+        bool operator==(const SplitVertKey& o) const { return vertIdx == o.vertIdx && stIdx == o.stIdx; }
+    };
+    struct SplitVertKeyHash
+    {
+        size_t operator()(const SplitVertKey& k) const
+        {
+            return ((size_t)k.vertIdx * 73856093) ^ ((size_t)k.stIdx * 19349663);
+        }
+    };
+
+    std::unordered_map<SplitVertKey, int, SplitVertKeyHash> vertMap;
+    int uniqueCount = 0;
+
+    // Pre-build the split vertex mapping
     for (int t = 0; t < m_numTris; ++t)
     {
         for (int v = 0; v < 3; ++v)
         {
             int vi = triangles[t].vertexIndex[v];
             int si = triangles[t].stIndex[v];
-            if (vi >= 0 && vi < m_numVerts && si >= 0 && si < hdr->numST)
+            SplitVertKey key = {vi, si};
+            if (vertMap.find(key) == vertMap.end())
             {
-                if (!hasUV[vi])
-                {
-                    float u = (float)stCoords[si].s / (float)hdr->skinWidth;
-                    float vt = (float)stCoords[si].t / (float)hdr->skinHeight;
-                    m_uvs[vi * 2 + 0] = u;
-                    m_uvs[vi * 2 + 1] = vt;
-                    hasUV[vi] = true;
-                }
+                vertMap[key] = uniqueCount++;
             }
         }
     }
 
-    // Build static index buffer (MD2 triangles are constant across frames)
+    m_numVerts = uniqueCount;
+    m_uvs.resize(m_numVerts * 2);
+    for (const auto& kv : vertMap)
+    {
+        int gpuIdx = kv.second;
+        float u = (float)stCoords[kv.first.stIdx].s / (float)hdr->skinWidth;
+        float vt = (float)stCoords[kv.first.stIdx].t / (float)hdr->skinHeight;
+        m_uvs[gpuIdx * 2 + 0] = u;
+        m_uvs[gpuIdx * 2 + 1] = vt;
+    }
+
+    // Build remapped index buffer (points into split vertex array)
     std::vector<uint32_t> indices(m_numTris * 3);
     for (int i = 0; i < m_numTris; ++i)
     {
-        indices[i * 3 + 0] = triangles[i].vertexIndex[0];
-        indices[i * 3 + 1] = triangles[i].vertexIndex[1];
-        indices[i * 3 + 2] = triangles[i].vertexIndex[2];
+        for (int v = 0; v < 3; ++v)
+        {
+            int vi = triangles[i].vertexIndex[v];
+            int si = triangles[i].stIndex[v];
+            SplitVertKey key = {vi, si};
+            indices[i * 3 + v] = (uint32_t)vertMap[key];
+        }
     }
 
     BufferDesc ibDesc{};
@@ -412,9 +437,19 @@ bool MD2Mesh::load(IRenderBackend* backend, AssetFS* assets, const char* md2Path
     vbDesc.size = m_numVerts * sizeof(MD2VertexPacked);
     m_vertexBuffer = backend->createBuffer(vbDesc);
 
+    // Build the inverse mapping: original vertex index → list of (splitIdx, stIdx)
+    // This is needed to remap frame vertex data to the split vertex array.
+    // We need to store this for frame interpolation.
+    m_splitInfo.resize(frameVertexCount);
+    for (const auto& kv : vertMap)
+    {
+        if (kv.first.vertIdx >= 0 && kv.first.vertIdx < frameVertexCount)
+            m_splitInfo[kv.first.vertIdx].push_back({kv.second, kv.first.stIdx});
+    }
+
     // Upload initial frame (frame 0)
     std::vector<MD2VertexPacked> initialVerts(m_numVerts);
-    buildFrameData(frameBase, 0, initialVerts.data(), frameVertexCount);
+    buildFrameDataSplit(frameBase, 0, initialVerts.data(), frameVertexCount);
 
     // Apply UVs to initial vertex buffer
     for (int i = 0; i < m_numVerts; ++i)
@@ -650,6 +685,58 @@ void MD2Mesh::buildFrameData(const uint8_t* frameBytes, int frameIdx, MD2VertexP
     }
 }
 
+// Build frame data with vertex splitting: each original vertex may map to multiple GPU vertices
+void MD2Mesh::buildFrameDataSplit(const uint8_t* frameBytes, int frameIdx, MD2VertexPacked* outVerts, int frameVertCount) const
+{
+    if (frameIdx < 0 || frameIdx >= m_numFrames) return;
+    if (frameVertCount <= 0) frameVertCount = m_frameVertCount;
+
+    const int frameByteSize = sizeof(MD2AliasFrame) + frameVertCount * sizeof(MD2AliasVertex);
+    const MD2AliasFrame* aliasFrame = reinterpret_cast<const MD2AliasFrame*>(frameBytes + frameIdx * frameByteSize);
+    const MD2AliasVertex* aliasVerts = reinterpret_cast<const MD2AliasVertex*>(aliasFrame + 1);
+
+    // First compute positions/normals for each original vertex
+    struct RawVert { float px, py, pz; float nx, ny, nz; };
+    std::vector<RawVert> rawVerts(frameVertCount);
+    for (int i = 0; i < frameVertCount; ++i)
+    {
+        Vec3 pos = q2ToGL(
+            aliasFrame->scale[0] * aliasVerts[i].v[0] + aliasFrame->translate[0],
+            aliasFrame->scale[1] * aliasVerts[i].v[1] + aliasFrame->translate[1],
+            aliasFrame->scale[2] * aliasVerts[i].v[2] + aliasFrame->translate[2]);
+        rawVerts[i].px = pos.x; rawVerts[i].py = pos.y; rawVerts[i].pz = pos.z;
+
+        uint8_t ni = aliasVerts[i].normalIndex;
+        if (ni >= MD2_NUM_ANORMS) ni = 0;
+        rawVerts[i].nx = g_md2Normals[ni].x;
+        rawVerts[i].ny = g_md2Normals[ni].y;
+        rawVerts[i].nz = g_md2Normals[ni].z;
+    }
+
+    // Now duplicate into split vertices
+    for (int i = 0; i < frameVertCount; ++i)
+    {
+        for (const auto& split : m_splitInfo[i])
+        {
+            if (split.splitIdx < m_numVerts)
+            {
+                outVerts[split.splitIdx].pos[0] = rawVerts[i].px;
+                outVerts[split.splitIdx].pos[1] = rawVerts[i].py;
+                outVerts[split.splitIdx].pos[2] = rawVerts[i].pz;
+                outVerts[split.splitIdx].normal[0] = rawVerts[i].nx;
+                outVerts[split.splitIdx].normal[1] = rawVerts[i].ny;
+                outVerts[split.splitIdx].normal[2] = rawVerts[i].nz;
+                outVerts[split.splitIdx].lmUV[0] = -1.0f;
+                outVerts[split.splitIdx].lmUV[1] = -1.0f;
+                outVerts[split.splitIdx].color[0] = 255;
+                outVerts[split.splitIdx].color[1] = 255;
+                outVerts[split.splitIdx].color[2] = 255;
+                outVerts[split.splitIdx].color[3] = 255;
+            }
+        }
+    }
+}
+
 void MD2Mesh::detectAnimations()
 {
     // Parse frame names and group by prefix (letters before trailing digits).
@@ -719,6 +806,23 @@ void MD2Mesh::detectAnimations()
             }
         }
     }
+
+    // Debug: log detected animations
+    Logger::instance().info("MD2: detected %zu animation ranges:", m_anims.size());
+    for (const auto& [name, range] : m_anims)
+    {
+        Logger::instance().info("  '%s': frames %d-%d (%.0f fps)",
+                                name.c_str(), range.first, range.last, range.fps);
+    }
+    if (m_anims.empty())
+    {
+        // Print first few frame names for debugging
+        for (int f = 0; f < std::min(m_numFrames, 5); ++f)
+        {
+            const char* fname = frameName(f);
+            Logger::instance().info("  frame[%d]: '%s'", f, fname && fname[0] ? fname : "(empty)");
+        }
+    }
 }
 
 const MD2AnimRange* MD2Mesh::findAnim(const char* prefix) const
@@ -777,80 +881,72 @@ void MD2Instance::setAnim(const MD2AnimRange& range)
 // =====================================================================
 //  Interpolation helper (CPU-side, called each frame before upload)
 // =====================================================================
-static void interpolateFrame(const MD2Mesh& mesh, int frameA, int frameB, float t,
-                             MD2VertexPacked* outVerts)
+void MD2Mesh::interpolateFrame(int frameA, int frameB, float t,
+                               MD2VertexPacked* outVerts, int outVertCount) const
 {
-    int nv = mesh.numVertices();
-    int fvc = mesh.frameVertCount();
-    const float* scaleA = mesh.frameScale(frameA);
-    const float* transA = mesh.frameTranslate(frameA);
-    const float* scaleB = mesh.frameScale(frameB);
-    const float* transB = mesh.frameTranslate(frameB);
+    int fvc = m_frameVertCount;
+    const float* scaleA = m_frameData.data() + frameA * 6;
+    const float* transA = scaleA + 3;
+    const float* scaleB = m_frameData.data() + frameB * 6;
+    const float* transB = scaleB + 3;
 
-    const uint8_t* rawA = mesh.frameVerts(frameA);
-    const uint8_t* rawB = mesh.frameVerts(frameB);
+    const uint8_t* rawA = &m_frameVerts[frameA * fvc * 4];
+    const uint8_t* rawB = &m_frameVerts[frameB * fvc * 4];
 
-    for (int i = 0; i < nv; ++i)
+    // Interpolate positions/normals on original vertices
+    struct InterpVert { float px, py, pz; float nx, ny, nz; };
+    std::vector<InterpVert> interpVerts(fvc);
+    for (int i = 0; i < fvc; ++i)
     {
-        // For vertices beyond frameVertCount (expanded due to bad indices),
-        // just copy UVs and zero the position.
-        if (i >= fvc)
-        {
-            outVerts[i].pos[0] = 0; outVerts[i].pos[1] = 0; outVerts[i].pos[2] = 0;
-            outVerts[i].normal[0] = 0; outVerts[i].normal[1] = 0; outVerts[i].normal[2] = 1;
-            outVerts[i].uv[0] = mesh.uv(i, 0);
-            outVerts[i].uv[1] = mesh.uv(i, 1);
-            outVerts[i].lmUV[0] = -1; outVerts[i].lmUV[1] = -1;
-            outVerts[i].color[0] = 255; outVerts[i].color[1] = 255;
-            outVerts[i].color[2] = 255; outVerts[i].color[3] = 255;
-            continue;
-        }
-
-        // Decompress frame A
         Vec3 pA = q2ToGL(
             scaleA[0] * rawA[i * 4 + 0] + transA[0],
             scaleA[1] * rawA[i * 4 + 1] + transA[1],
             scaleA[2] * rawA[i * 4 + 2] + transA[2]);
 
-        // Decompress frame B
         Vec3 pB = q2ToGL(
             scaleB[0] * rawB[i * 4 + 0] + transB[0],
             scaleB[1] * rawB[i * 4 + 1] + transB[1],
             scaleB[2] * rawB[i * 4 + 2] + transB[2]);
 
-        // Lerp position
-        Vec3 pos = {
-            pA.x + t * (pB.x - pA.x),
-            pA.y + t * (pB.y - pA.y),
-            pA.z + t * (pB.z - pA.z),
-        };
+        interpVerts[i].px = pA.x + t * (pB.x - pA.x);
+        interpVerts[i].py = pA.y + t * (pB.y - pA.y);
+        interpVerts[i].pz = pA.z + t * (pB.z - pA.z);
 
-        outVerts[i].pos[0] = pos.x;
-        outVerts[i].pos[1] = pos.y;
-        outVerts[i].pos[2] = pos.z;
-
-        // Normals: use frame A's normal (MD2 normals don't change per frame in practice
-        // for most models; both frames have the same normal table indices).
-        // For correctness, we could lerp normals too, but MD2 stores them as table indices.
         uint8_t niA = rawA[i * 4 + 3];
         if (niA >= MD2_NUM_ANORMS) niA = 0;
-        outVerts[i].normal[0] = g_md2Normals[niA].x;
-        outVerts[i].normal[1] = g_md2Normals[niA].y;
-        outVerts[i].normal[2] = g_md2Normals[niA].z;
+        interpVerts[i].nx = g_md2Normals[niA].x;
+        interpVerts[i].ny = g_md2Normals[niA].y;
+        interpVerts[i].nz = g_md2Normals[niA].z;
+    }
 
-        // Copy pre-computed UVs
-        outVerts[i].uv[0] = mesh.uv(i, 0);
-        outVerts[i].uv[1] = mesh.uv(i, 1);
-
-        // Sentinel: no lightmap
+    // Initialize all output vertices with defaults
+    for (int i = 0; i < outVertCount; ++i)
+    {
+        outVerts[i].pos[0] = 0; outVerts[i].pos[1] = 0; outVerts[i].pos[2] = 0;
+        outVerts[i].normal[0] = 0; outVerts[i].normal[1] = 0; outVerts[i].normal[2] = 1;
+        outVerts[i].uv[0] = m_uvs[i * 2 + 0];
+        outVerts[i].uv[1] = m_uvs[i * 2 + 1];
         outVerts[i].lmUV[0] = -1.0f;
         outVerts[i].lmUV[1] = -1.0f;
+        outVerts[i].color[0] = 255; outVerts[i].color[1] = 255;
+        outVerts[i].color[2] = 255; outVerts[i].color[3] = 255;
+    }
 
-        // White vertex color
-        outVerts[i].color[0] = 255;
-        outVerts[i].color[1] = 255;
-        outVerts[i].color[2] = 255;
-        outVerts[i].color[3] = 255;
+    // Scatter interpolated data to split vertices
+    for (int i = 0; i < fvc && i < (int)m_splitInfo.size(); ++i)
+    {
+        for (const auto& split : m_splitInfo[i])
+        {
+            if (split.splitIdx < outVertCount)
+            {
+                outVerts[split.splitIdx].pos[0] = interpVerts[i].px;
+                outVerts[split.splitIdx].pos[1] = interpVerts[i].py;
+                outVerts[split.splitIdx].pos[2] = interpVerts[i].pz;
+                outVerts[split.splitIdx].normal[0] = interpVerts[i].nx;
+                outVerts[split.splitIdx].normal[1] = interpVerts[i].ny;
+                outVerts[split.splitIdx].normal[2] = interpVerts[i].nz;
+            }
+        }
     }
 }
 
@@ -942,6 +1038,46 @@ void ModelRenderer::updateEntity(int entityIndex, float dt, const Vec3& origin, 
     }
 }
 
+void ModelRenderer::setEntityAnim(int entityIndex, const char* animName)
+{
+    if (entityIndex < 0 || entityIndex >= (int)m_entities.size()) return;
+
+    EntityRecord& rec = m_entities[entityIndex];
+    if (rec.modelIndex < 0 || rec.type != ModelType::MD2) return;
+
+    const MD2Mesh* mesh = static_cast<const MD2Mesh*>(m_meshes[rec.modelIndex].mesh.get());
+    if (!mesh) return;
+
+    if (const MD2AnimRange* range = mesh->findAnim(animName))
+        rec.instance.setAnim(*range);
+}
+
+void ModelRenderer::setEntityAnimRange(int entityIndex, int first, int last, float fps)
+{
+    if (entityIndex < 0 || entityIndex >= (int)m_entities.size()) return;
+
+    EntityRecord& rec = m_entities[entityIndex];
+    if (rec.modelIndex < 0 || rec.type != ModelType::MD2) return;
+
+    rec.instance.setAnim(first, last, fps);
+}
+
+MD2Instance* ModelRenderer::getMD2Instance(int entityIndex)
+{
+    if (entityIndex < 0 || entityIndex >= (int)m_entities.size()) return nullptr;
+    EntityRecord& rec = m_entities[entityIndex];
+    if (rec.type != ModelType::MD2) return nullptr;
+    return &rec.instance;
+}
+
+MeshInstance* ModelRenderer::getStaticInstance(int entityIndex)
+{
+    if (entityIndex < 0 || entityIndex >= (int)m_entities.size()) return nullptr;
+    EntityRecord& rec = m_entities[entityIndex];
+    if (rec.type != ModelType::Static) return nullptr;
+    return &rec.staticInstance;
+}
+
 void ModelRenderer::renderEntity(IRenderBackend* backend, int modelIndex,
                                   const MD2Instance& instance, ShaderHandle shader) const
 {
@@ -953,7 +1089,8 @@ void ModelRenderer::renderEntity(IRenderBackend* backend, int modelIndex,
 
     // Interpolate vertices on CPU
     std::vector<MD2VertexPacked> verts(mesh->numVertices());
-    interpolateFrame(*mesh, instance.currentFrame, instance.nextFrame, instance.lerpT, verts.data());
+    mesh->interpolateFrame(instance.currentFrame, instance.nextFrame, instance.lerpT,
+                           verts.data(), mesh->numVertices());
 
     // Upload interpolated vertices
     const_cast<MD2Mesh*>(mesh)->updateVertices(backend, verts.data(), mesh->numVertices());

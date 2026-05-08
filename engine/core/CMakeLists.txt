@@ -62,6 +62,17 @@ target_sources(nova_core PRIVATE
     log.cpp
 )
 
+# Engine API (cross-DLL bridge to game module)
+# Header is public so game DLL can include it.
+# Implementation is in nova_core (static lib) with NO renderer dependency.
+# Renderer callbacks are wired at runtime by Engine.
+target_sources(nova_core PUBLIC
+    engine_api.h
+)
+target_sources(nova_core PRIVATE
+    engine_api.cpp
+)
+
 # Camera
 target_sources(nova_core PRIVATE
     camera.h

@@ -10,6 +10,7 @@
 // ============================================================
 
 #include "engine/entities/entity_list.h"
+#include "engine/entities/entity_class.h"
 
 #include <cstring>
 #include <algorithm>
@@ -83,6 +84,12 @@ EntityHandle EntityList::create(const char *classname)
     // Mark entity alive (Problem 3d)
     e.state = STATE_ALIVE;
 
+    // Look up entity class from registry
+    e.entityClass = g_entityClasses.find(classname);
+    if (e.entityClass)
+        fprintf(stdout, "EntityList: entity[%d] class='%s' -> EntityClass='%s'\n",
+                id.index(), classname, e.entityClass->classname());
+
     // Mark slot active
     m_active[id.index()] = 1;
     ++m_activeCount;
@@ -91,8 +98,16 @@ EntityHandle EntityList::create(const char *classname)
 }
 
 // -----------------------------------------------------------------------
-// destroy - free an entity
+// finalize - call EntityClass::onSpawn() after all properties are set
 // -----------------------------------------------------------------------
+void EntityList::finalize(EntityHandle handle)
+{
+    Entity* e = get(handle);
+    if (!e) return;
+
+    if (e->entityClass)
+        e->entityClass->onSpawn(e);
+}
 void EntityList::destroy(EntityHandle handle)
 {
     if (!handle.isValid())
@@ -203,7 +218,11 @@ void EntityList::think(float dt)
             continue;
 
         Entity& e = m_entities[i];
-        if (e.state == STATE_ALIVE && e.think != nullptr)
+        if (e.state != STATE_ALIVE) continue;
+
+        if (e.entityClass)
+            e.entityClass->onThink(&e, dt);
+        else if (e.think != nullptr)
             e.think(&e, dt);
     }
 }

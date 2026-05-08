@@ -307,6 +307,9 @@ int MapLoader::load(IWorld* world)
             g_propertyStore.set(entIdx, k, pe.pairs[i].val);
         }
 
+        // Call EntityClass::onSpawn() now that all properties are set
+        g_entityList.finalize(ent->handle);
+
         fprintf(stdout, "MapLoader: spawned '%s' at (%.0f, %.0f, %.0f)\n",
                 classname, origin.x, origin.y, origin.z);
         ++spawned;

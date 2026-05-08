@@ -273,11 +273,20 @@ static bool loadTextureWithFallback(IRenderBackend* backend, AssetFS* assets,
             if (colonPos != std::string::npos)
                 fileName = fileName.substr(colonPos + 1);
 
-            std::string dirOnly = fullPath.substr(0, lastSlash + 1);
-            if (dirOnly.empty() && !dir.empty())
-                dirOnly = dir;
+            // Detect broken absolute Windows path (drive letter, backslashes)
+            bool looksBroken = (fullPath.find(":\\") != std::string::npos || fullPath.find(":/") != std::string::npos);
 
-            std::string trialPath = dirOnly + fileName;
+            std::string trialPath;
+            if (looksBroken)
+            {
+                // Use bare filename in model directory, ignoring the garbage prefix
+                trialPath = dir.empty() ? fileName : (dir + fileName);
+            }
+            else
+            {
+                std::string dirOnly = fullPath.substr(0, lastSlash + 1);
+                trialPath = dirOnly + fileName;
+            }
 
             // Try filename as-is
             if (assets->readAllBytes(trialPath.c_str(), fileData) &&

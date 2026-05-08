@@ -33,6 +33,10 @@ public:
     EntityHandle create(const char *classname);
     void destroy(EntityHandle handle);
 
+    // ---- Post-spawn finalization ----
+    // Call after all properties are set. Dispatches EntityClass::onSpawn().
+    void finalize(EntityHandle handle);
+
     // ---- Access ----
     Entity *get(EntityHandle handle);
     Entity& getRef(EntityHandle handle);

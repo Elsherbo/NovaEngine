@@ -1,0 +1,65 @@
+[2026-05-07 10:45:59] [INFO] Nova Engine Phase 1 initializing...
+Assets: mounted BSP root 'assets'
+Assets: mounted BSP dir 'assets/maps'
+Assets: mounted game dir 'build/assets'
+Assets: mounted 'assets/' (models, fonts, etc.)
+Engine: EntityFactory initialized (10 built-in classes)
+GameDLLLoader: loaded 'build/assets/nova_game.dll'
+[2026-05-07 10:46:04] [INFO] EntityClassRegistry: registered 'info_player_deathmatch'
+[EngineAPI] registered entity class 'info_player_deathmatch'
+[2026-05-07 10:46:06] [INFO] Engine: game DLL loaded
+Engine: game DLL ready
+[Text2D] loading conchars 'pics/conchars.png' (512x512, 32px native glyphs → display at 16px)
+[Text2D] alternate set loaded
+Text2D: loaded Q2 conchars from 'pics/conchars.png' (normal + alternate set)
+BSPMap: loading version 38 (Vanilla Q2)
+BSPMap: vis lump: 31 clusters, 4 bytes/row
+BSPMap: verts=301 faces=255 planes=97 edges=557 models=1 leafFaces=333
+BSPMap: brushes=49 brushSides=294 leafBrushes=55
+BSPMap: lightmap atlas 4096x4096: 255 packed, 0 skipped, 0 no-lightofs, 0 zero-dims, 0 out-of-bounds
+BSPMap: face[0] lightofs=0 lmW=14 lmH=8 hasAtlas=1 atlasX=0 atlasY=0
+BSPMap: lightmapData size=63588 bytes
+BSPLoader: trying texture 'textures/1r_metpan05b.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_metpan05b.wal'
+BSPLoader: trying texture 'textures/1r_clocktrim02b.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_clocktrim02b.wal'
+BSPLoader: trying texture 'textures/1r_metpan02.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_metpan02.wal'
+BSPLoader: trying texture 'textures/1r_floor.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_floor.wal'
+BSPLoader: trying texture 'textures/floor1_l3_2a.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/floor1_l3_2a.wal'
+BSPLoader: trying texture 'textures/1r_yuk_sup01.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_yuk_sup01.wal'
+BSPLoader: trying texture 'textures/1r_plain_met01.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/1r_plain_met01.wal'
+BSPLoader: trying texture 'textures/mtl-well_l3_88c.wal' (m_assets=000000309dfffc48)
+BSPLoader: loaded 'textures/mtl-well_l3_88c.wal'
+BSPMap: 255 surfaces, 1112 verts, 1806 indices
+BSPMap: all 1806 indices valid
+BSPMap: uploaded 1 chunk(s), 1112 vertices, 1806 indices, 255 surfaces
+MapLoader: spawned 'worldspawn' at (0, 0, 0)
+MapLoader: spawned 'info_player_start' at (-880, 80, 136)
+EntityList: entity[3] class='info_player_deathmatch' -> EntityClass='info_player_deathmatch'
+[EnemyClass] onSpawn: entity[3] requested anim='run'
+MapLoader: spawned 'info_player_deathmatch' at (-824, -168, 112)
+MapLoader: 3 entities spawned from BSP lump
+Engine: MapLoader spawned 3 entities from BSP lump
+[2026-05-07 10:46:07] [INFO] ModelSpawner: entity[3] class='info_player_deathmatch' model='models\soldier\mach-body.md2' origin=(-824.0,-168.0,112.0)
+[2026-05-07 10:46:07] [INFO] MD2: triangle scan complete — maxVertIdx=604, maxSTIdx=747
+[2026-05-07 10:46:07] [INFO] MD2: parsing 'models/soldier/mach-body.md2' verts=605 (frameVerts=605) tris=1190 frames=27 st=748 skins=1
+[2026-05-07 10:46:07] [INFO] MD2: detected 6 animation ranges:
+[2026-05-07 10:46:07] [INFO]   'die': frames 20-26 (10 fps)
+[2026-05-07 10:46:07] [INFO]   'pain': frames 16-19 (10 fps)
+[2026-05-07 10:46:07] [INFO]   'waiting': frames 15-15 (10 fps)
+[2026-05-07 10:46:07] [INFO]   'attack4b': frames 12-12 (10 fps)
+[2026-05-07 10:46:07] [INFO]   'attack': frames 8-14 (10 fps)
+[2026-05-07 10:46:07] [INFO]   'run': frames 0-7 (10 fps)
+[2026-05-07 10:46:07] [INFO] MD2: loaded 'models/soldier/mach-body.md2' (844 verts, 1190 tris, 27 frames, 1 skins)
+[2026-05-07 10:46:07] [INFO] ModelSpawner: loaded MD2 'models/soldier/mach-body.md2' (index 0)
+[2026-05-07 10:46:07] [INFO] ModelSpawner: entity[3] applied pending anim='run'
+[2026-05-07 10:46:07] [INFO] ModelSpawner: registered 1 model entities (1 unique models)
+Engine: safe spawn at (-824.0, 140.0, 168.0)
+Engine: BSP loaded, spawn at (-824.0, 140.0, 168.0)
+EntityList: sizeof(Entity) = 368 bytes
+[2026-05-07 10:46:10] [INFO] Engine: Phase 1 ready
