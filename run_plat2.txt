@@ -1,8 +1,0 @@
-[2026-05-08 23:47:41] [INFO] Nova Engine Phase 1 initializing...
-Assets: mounted 'assets/' (models, fonts, etc.)
-Engine: EntityFactory initialized (10 built-in classes)
-[Text2D] loading conchars 'pics/conchars.png' (512x512, 32px native glyphs → display at 16px)
-[Text2D] alternate set loaded
-Text2D: loaded Q2 conchars from 'pics/conchars.png' (normal + alternate set)
-EntityList: sizeof(Entity) = 480 bytes
-[2026-05-08 23:47:44] [INFO] Engine: Phase 1 ready

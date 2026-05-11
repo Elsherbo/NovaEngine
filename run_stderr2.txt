@@ -1,4 +1,0 @@
-[Text2D] init OK — fontTex=1 (builtin IBM CP437 8x8)
-[2026-05-09 00:08:28] [INFO] GameModule: initializing...
-[2026-05-09 00:08:30] [INFO] GameModule: ready
-[2026-05-09 00:08:32] [INFO] GameModule: 
