@@ -8,6 +8,7 @@
 add_library(nova_game SHARED
     src/game_main.cpp
     src/game_module.cpp
+    src/game_entity_classes.cpp
     src/entities/game_player.cpp
     src/entities/game_items.cpp
 )

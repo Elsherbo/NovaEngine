@@ -2,33 +2,35 @@
 // FILE:    game/src/game_entity_classes.h
 // MODULE:  Game
 // PURPOSE: Game-specific entity classes using EngineAPI.
-//          Register in GameModule::init().
+//          All property access and iteration route through EngineAPI
+//          to avoid cross-DLL global duplication (g_propertyStore
+//          and g_entityList are separate copies per binary).
 // ============================================================
 #pragma once
 
 #include "engine/core/engine_api.h"
 #include "engine/entities/entity_class.h"
-#include "engine/entities/entity_list.h"
+#include "engine/entities/entity.h"
 
 #include <cstdlib>
 #include <cstdio>
+#include <cstdint>
 
 namespace nova
 {
 
-// DLL-local EngineAPI pointer — set by registerGameEntityClasses().
-// Avoids cross-DLL global duplication (g_engineAPI from nova_core
-// is a separate copy in the game DLL).
-static EngineAPI* s_gameAPI = nullptr;
+// DLL-local EngineAPI pointer — defined in game_entity_classes.cpp.
+// Declared extern here so all TUs see the same variable.
+extern EngineAPI* s_gameAPI;
 
 // -----------------------------------------------------------------------
-// EnemyClass — basic enemy entity with onSpawn + onThink hooks.
-// Demonstrates the EngineAPI-based entity class system.
+// MonsterClass — basic enemy entity with onSpawn + onThink hooks.
+// Uses per-entity state (Entity::aiThinkTimer, aiState) — not shared.
 // -----------------------------------------------------------------------
-class EnemyClass : public EntityClass
+class MonsterClass : public EntityClass
 {
 public:
-    const char* classname() const override { return "info_player_deathmatch"; }
+    const char* classname() const override { return "monster_soldier"; }
 
     void onSpawn(Entity* e) override
     {
@@ -38,62 +40,51 @@ public:
 
         int idx = e->handle.index();
         s_gameAPI->setEntityAnim(idx, "run");
-        fprintf(stdout, "[EnemyClass] onSpawn: entity[%d] requested anim='run'\n", idx);
-        fflush(stdout);
     }
 
     void onThink(Entity* e, float dt) override
     {
         if (!e || !s_gameAPI) return;
 
-        m_thinkTimer += dt;
-        if (m_thinkTimer >= 5.0f)
+        e->aiThinkTimer += dt;
+        if (e->aiThinkTimer >= 5.0f)
         {
-            m_thinkTimer = 0.0f;
-            m_chasing = !m_chasing;
+            e->aiThinkTimer = 0.0f;
+            e->aiState = (e->aiState == 0) ? 1 : 0;
 
             int idx = e->handle.index();
 
-            if (m_chasing)
-            {
+            if (e->aiState == 1)
                 s_gameAPI->setEntityAnim(idx, "run");
-                fprintf(stdout, "[EnemyClass] onThink: entity[%d] chasing='run'\n", idx);
-            }
             else
-            {
                 s_gameAPI->setEntityAnim(idx, "waiting");
-                fprintf(stdout, "[EnemyClass] onThink: entity[%d] idle='waiting'\n", idx);
-            }
-            fflush(stdout);
         }
         (void)dt;
     }
-
-private:
-    float m_thinkTimer = 0.0f;
-    bool  m_chasing = false;
 };
 
 // -----------------------------------------------------------------------
-// Moving platform states
+// Moving platform states (stored in Entity::platState)
 // -----------------------------------------------------------------------
-enum class PlatState : uint8_t
+enum PlatState : uint8_t
 {
-    IDLE_BOTTOM,
-    MOVING_UP,
-    WAITING_TOP,
-    MOVING_DOWN,
+    PLAT_IDLE_BOTTOM  = 0,
+    PLAT_MOVING_UP    = 1,
+    PLAT_WAITING_TOP  = 2,
+    PLAT_MOVING_DOWN  = 3,
 };
 
 // -----------------------------------------------------------------------
 // FuncPlat — cyclic vertical moving platform.
-// TrenchBroom properties:
+// TrenchBroom properties (read via EngineAPI to cross DLL boundary):
 //   "height" = travel distance (default 64)
 //   "speed"  = units/sec       (default 100)
 //   "wait"   = pause at top    (default 2s)
 //   "model"  = visual mesh     (default: none, uses a box if unset)
 //
-// Carries any entity standing on top via AABB overlap check.
+// All state stored per-entity in Entity struct (platStartPos, platTargetPos,
+// platHeight, platSpeed, platWait, platWaitTimer, platState).
+// Uses s_gameAPI->iterateActiveEntities() to avoid g_entityList duplication.
 // -----------------------------------------------------------------------
 class FuncPlat : public EntityClass
 {
@@ -102,33 +93,23 @@ public:
 
     void onSpawn(Entity* e) override
     {
-        if (!e) return;
+        if (!e || !s_gameAPI) return;
 
-        // Read TrenchBroom properties
-        const char* h = e->getProperty("height");
-        m_height = h ? atof(h) : 64.0f;
+        const char* h = s_gameAPI->getEntityProperty(e->handle, "height");
+        e->platHeight = h ? atof(h) : 64.0f;
 
-        const char* s = e->getProperty("speed");
-        m_speed = s ? atof(s) : 100.0f;
+        const char* s = s_gameAPI->getEntityProperty(e->handle, "speed");
+        e->platSpeed = s ? atof(s) : 100.0f;
 
-        const char* w = e->getProperty("wait");
-        m_wait = w ? atof(w) : 2.0f;
+        const char* w = s_gameAPI->getEntityProperty(e->handle, "wait");
+        e->platWait = w ? atof(w) : 2.0f;
 
-        // Platform bounds (default: 64x64x16 box)
-        e->mins = Vec3{-32, -32, 0};
-        e->maxs = Vec3{32, 32, 16};
+        e->platStartPos  = e->origin;
+        e->platTargetPos = e->platStartPos;
+        e->platTargetPos.z += e->platHeight;
 
-        m_startPos = e->origin;
-        m_targetPos = m_startPos;
-        m_targetPos.y += m_height;  // Q2 Y = up
-
-        m_state = PlatState::IDLE_BOTTOM;
-        m_waitTimer = 1.0f;  // short initial delay before first move
-
-        fprintf(stdout, "[FuncPlat] entity[%d] at (%.1f,%.1f,%.1f) h=%.0f spd=%.0f wait=%.1f\n",
-                e->handle.index(), e->origin.x, e->origin.y, e->origin.z,
-                m_height, m_speed, m_wait);
-        fflush(stdout);
+        e->platState      = PLAT_IDLE_BOTTOM;
+        e->platWaitTimer  = 1.0f;
     }
 
     void onThink(Entity* e, float dt) override
@@ -137,52 +118,47 @@ public:
 
         Vec3 prevOrigin = e->origin;
 
-        switch (m_state)
+        switch (e->platState)
         {
-        case PlatState::IDLE_BOTTOM:
-            m_waitTimer -= dt;
-            if (m_waitTimer <= 0.0f)
-            {
-                m_state = PlatState::MOVING_UP;
-            }
+        case PLAT_IDLE_BOTTOM:
+            e->platWaitTimer -= dt;
+            if (e->platWaitTimer <= 0.0f)
+                e->platState = PLAT_MOVING_UP;
             break;
 
-        case PlatState::MOVING_UP:
+        case PLAT_MOVING_UP:
         {
-            float step = m_speed * dt;
-            e->origin.y += step;
-            if (e->origin.y >= m_targetPos.y)
+            float step = e->platSpeed * dt;
+            e->origin.z += step;
+            if (e->origin.z >= e->platTargetPos.z)
             {
-                e->origin.y = m_targetPos.y;
-                m_state = PlatState::WAITING_TOP;
-                m_waitTimer = m_wait;
+                e->origin.z = e->platTargetPos.z;
+                e->platState = PLAT_WAITING_TOP;
+                e->platWaitTimer = e->platWait;
             }
             break;
         }
 
-        case PlatState::WAITING_TOP:
-            m_waitTimer -= dt;
-            if (m_waitTimer <= 0.0f)
-            {
-                m_state = PlatState::MOVING_DOWN;
-            }
+        case PLAT_WAITING_TOP:
+            e->platWaitTimer -= dt;
+            if (e->platWaitTimer <= 0.0f)
+                e->platState = PLAT_MOVING_DOWN;
             break;
 
-        case PlatState::MOVING_DOWN:
+        case PLAT_MOVING_DOWN:
         {
-            float step = m_speed * dt;
-            e->origin.y -= step;
-            if (e->origin.y <= m_startPos.y)
+            float step = e->platSpeed * dt;
+            e->origin.z -= step;
+            if (e->origin.z <= e->platStartPos.z)
             {
-                e->origin.y = m_startPos.y;
-                m_state = PlatState::IDLE_BOTTOM;
-                m_waitTimer = m_wait;
+                e->origin.z = e->platStartPos.z;
+                e->platState = PLAT_IDLE_BOTTOM;
+                e->platWaitTimer = e->platWait;
             }
             break;
         }
         }
 
-        // Carrier: move entities standing on top
         Vec3 delta = e->origin - prevOrigin;
         if (delta.x != 0.0f || delta.y != 0.0f || delta.z != 0.0f)
             carryEntities(e, delta);
@@ -192,22 +168,34 @@ private:
     static void carryHelper(Entity& other)
     {
         if (other.state != STATE_ALIVE) return;
-        if (!s_currentPlat) return;
+        // Use handle index for skip-guard (safe against pool reuse)
+        if (other.handle.index() == s_currentPlat->handle.index()) return;
+        if (other.carriedThisFrame) return;
 
+        // Q2 Z-up convention: X,Y = horizontal, Z = vertical (feet→head)
         AABB platBox = { s_currentPlat->origin + s_currentPlat->mins,
                          s_currentPlat->origin + s_currentPlat->maxs };
         AABB otherBox = { other.origin + other.mins,
                           other.origin + other.maxs };
 
-        bool hOverlap = (otherBox.max.x > platBox.min.x && otherBox.min.x < platBox.max.x) &&
-                        (otherBox.max.z > platBox.min.z && otherBox.min.z < platBox.max.z);
+        // Horizontal overlap: entity center must be over the platform.
+        // Using AABB overlap would let the player walk 16 units off the edge
+        // (half hull width) while still being "carried", preventing them from
+        // dropping down.  Center-point check stops carry as soon as the player's
+        // midpoint passes the platform edge — gravity takes over naturally.
+        bool hOverlap = (other.origin.x > platBox.min.x && other.origin.x < platBox.max.x) &&
+                        (other.origin.y > platBox.min.y && other.origin.y < platBox.max.y);
 
-        float feetDist = otherBox.min.y - platBox.max.y;
-        bool onTop = (feetDist >= -4.0f && feetDist <= 16.0f);
+        // Vertical: feet must be at or near platform top surface
+        // [-4, +2]: -4 = slight ground-snap interpenetration, +2 = one physics frame of travel
+        float feetDist = otherBox.min.z - platBox.max.z;
+        bool onTop = (feetDist >= -4.0f && feetDist <= 2.0f);
 
         if (hOverlap && onTop)
         {
-            other.origin = other.origin + s_platDelta;
+            // Inherit platform vertical velocity (~60fps approximation)
+            other.velocity.z = s_platDelta.z * 60.0f;
+            other.carriedThisFrame = 1;
         }
     }
 
@@ -215,38 +203,30 @@ private:
     {
         s_currentPlat = plat;
         s_platDelta = delta;
-        g_entityList.iterateActive(carryHelper);
+        s_gameAPI->iterateActiveEntities(carryHelper);
         s_currentPlat = nullptr;
     }
 
     static Entity* s_currentPlat;
     static Vec3    s_platDelta;
-
-    Vec3      m_startPos  = Vec3::zero();
-    Vec3      m_targetPos = Vec3::zero();
-    float     m_height    = 64.0f;
-    float     m_speed     = 100.0f;
-    float     m_wait      = 2.0f;
-    float     m_waitTimer = 0.0f;
-    PlatState m_state     = PlatState::IDLE_BOTTOM;
 };
 
-// Static members for callback bridge (avoid heap alloc in iterateActive)
-Entity* FuncPlat::s_currentPlat = nullptr;
-Vec3    FuncPlat::s_platDelta   = Vec3::zero();
+// -----------------------------------------------------------------------
+// PlayerEntityClass — minimal no-op class so the player entity has
+// a valid entityClass pointer for correct EntityList dispatch.
+// Player logic is driven by PlayerController, not onThink.
+// -----------------------------------------------------------------------
+class PlayerEntityClass : public EntityClass
+{
+public:
+    const char* classname() const override { return "player"; }
+    void onSpawn(Entity* e) override { (void)e; }
+    void onThink(Entity* e, float dt) override { (void)e; (void)dt; }
+};
 
 // -----------------------------------------------------------------------
 // registerGameEntityClasses — call from GameModule::init()
 // -----------------------------------------------------------------------
-inline void registerGameEntityClasses(EngineAPI* api)
-{
-    s_gameAPI = api;
-
-    static EnemyClass s_enemy;
-    s_gameAPI->registerEntityClass(&s_enemy, s_enemy.classname());
-
-    static FuncPlat s_plat;
-    s_gameAPI->registerEntityClass(&s_plat, s_plat.classname());
-}
+void registerGameEntityClasses(EngineAPI* api);
 
 } // namespace nova

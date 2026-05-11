@@ -14,6 +14,8 @@
 #include "engine/renderer/irender_backend.h"
 #include "engine/core/image_load.h"
 
+#include <glad/glad.h>
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -708,6 +710,10 @@ void BSPMap::buildGeometry()
 
     for (int fi = 0; fi < (int)m_faces.size(); ++fi)
     {
+        // Skip faces that belong to bmodels (brush entities).
+        // bmodel faces are rendered separately with origin offset.
+        if (getBModelForFace(fi) >= 0) continue;
+
         const BSPFace &face = m_faces[fi];
         if (face.numEdges < 3 || face.numEdges > 1024) continue;  // skip degenerate / corrupted faces
 
@@ -1724,3 +1730,343 @@ void BSPMap::render(IRenderBackend *backend, const Vec3& cameraPos)
 }
 
 } // namespace nova
+
+// ============================================================================
+// BModel rendering — brush entities (func_plat, func_door, etc.)
+// ============================================================================
+
+// Check if a face belongs to a bmodel. Returns bmodel index (1..N) or -1.
+int nova::BSPMap::getBModelForFace(int faceIndex) const
+{
+    for (int mi = 1; mi < (int)m_models.size(); ++mi)
+    {
+        const BSPModel& m = m_models[mi];
+        if (faceIndex >= m.firstFace && faceIndex < m.firstFace + m.numFaces)
+            return mi;
+    }
+    return -1;
+}
+
+void nova::BSPMap::buildBModelGeometry()
+{
+    m_bmodelGPU.resize(m_models.size());
+
+    for (int mi = 1; mi < (int)m_models.size(); ++mi)
+    {
+        const BSPModel& model = m_models[mi];
+        std::vector<BSPVertexPacked> verts;
+        std::vector<uint32_t> indices;
+        Vec3 bMin = {model.mins[0], model.mins[1], model.mins[2]};
+        Vec3 bMax = {model.maxs[0], model.maxs[1], model.maxs[2]};
+
+        std::vector<BSPVertexPacked> faceVerts;
+        verts.reserve(model.numFaces * 6);
+        indices.reserve(model.numFaces * 12);
+
+        for (int fi = model.firstFace; fi < model.firstFace + model.numFaces; ++fi)
+        {
+            const BSPFace& face = m_faces[fi];
+            if (face.numEdges < 3 || face.numEdges > 1024) continue;
+
+            if (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size())
+            {
+                int flags = m_texInfos[face.texinfo].flags;
+                if (flags & 0x84) continue;  // SKY | NODRAW
+            }
+
+            Vec3 faceNormal = {0.f, 1.f, 0.f};
+            if (face.plane < (uint16_t)m_planes.size())
+            {
+                faceNormal = m_planes[face.plane].normal;
+                if (face.sideFacing)
+                    faceNormal = -faceNormal;
+            }
+
+            const BSPTexInfo* ti = nullptr;
+            if (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size())
+                ti = &m_texInfos[face.texinfo];
+
+            faceVerts.clear();
+            faceVerts.reserve(face.numEdges);
+
+            for (int e = 0; e < face.numEdges; ++e)
+            {
+                int seIdx = face.firstEdge + e;
+                if (seIdx < 0 || seIdx >= (int)m_surfEdges.size()) continue;
+                int edgeIdx = m_surfEdges[seIdx];
+                uint16_t vIdx = (edgeIdx >= 0) ? m_edges[edgeIdx].v0 : m_edges[-edgeIdx].v1;
+                if (vIdx >= (uint16_t)m_vertices.size()) continue;
+
+                const Vec3& pos = m_vertices[vIdx];
+                float worldU = 0.f, worldV = 0.f;
+                if (ti)
+                {
+                    worldU = pos.x*ti->uAxis.x + pos.y*ti->uAxis.y + pos.z*ti->uAxis.z + ti->uOffset;
+                    worldV = pos.x*ti->vAxis.x + pos.y*ti->vAxis.y + pos.z*ti->vAxis.z + ti->vOffset;
+                }
+
+                float lmU = -1.f, lmV = -1.f;
+                if (face.hasAtlas && face.lmWidth > 0 && face.lmHeight > 0)
+                {
+                    float faceU = (worldU - face.lmMins[0]) / 16.f;
+                    float faceV = (worldV - face.lmMins[1]) / 16.f;
+                    lmU = ((float)face.atlasX + faceU + 0.5f) / (float)kAtlasSize;
+                    lmV = ((float)face.atlasY + faceV + 0.5f) / (float)kAtlasSize;
+                    float u0 = ((float)face.atlasX + 0.5f) / (float)kAtlasSize;
+                    float u1 = ((float)(face.atlasX + face.lmWidth) - 0.5f) / (float)kAtlasSize;
+                    float v0 = ((float)face.atlasY + 0.5f) / (float)kAtlasSize;
+                    float v1 = ((float)(face.atlasY + face.lmHeight) - 0.5f) / (float)kAtlasSize;
+                    lmU = lmU < u0 ? u0 : (lmU > u1 ? u1 : lmU);
+                    lmV = lmV < v0 ? v0 : (lmV > v1 ? v1 : lmV);
+                }
+
+                uint8_t cr = 255, cg = 255, cb = 255;
+                if (!face.hasAtlas) { cr = 80; cg = 80; cb = 100; }
+
+                BSPVertexPacked vtx;
+                vtx.pos[0] = pos.x; vtx.pos[1] = pos.y; vtx.pos[2] = pos.z;
+                if (ti && ti->texWidth > 0 && ti->texHeight > 0)
+                {
+                    vtx.uv[0] = worldU / (float)ti->texWidth;
+                    vtx.uv[1] = worldV / (float)ti->texHeight;
+                }
+                else
+                {
+                    vtx.uv[0] = worldU / 128.0f;
+                    vtx.uv[1] = worldV / 128.0f;
+                }
+                vtx.lmUV[0] = lmU;  vtx.lmUV[1] = lmV;
+                vtx.normal[0] = faceNormal.x;
+                vtx.normal[1] = faceNormal.y;
+                vtx.normal[2] = faceNormal.z;
+                vtx.color[0] = cr; vtx.color[1] = cg;
+                vtx.color[2] = cb; vtx.color[3] = 255;
+                faceVerts.push_back(vtx);
+            }
+
+            if ((int)faceVerts.size() < 3) continue;
+
+            uint32_t baseVertex = (uint32_t)verts.size();
+
+            Vec3 e1{ faceVerts[1].pos[0]-faceVerts[0].pos[0], faceVerts[1].pos[1]-faceVerts[0].pos[1], faceVerts[1].pos[2]-faceVerts[0].pos[2] };
+            Vec3 e2{ faceVerts[2].pos[0]-faceVerts[0].pos[0], faceVerts[2].pos[1]-faceVerts[0].pos[1], faceVerts[2].pos[2]-faceVerts[0].pos[2] };
+            Vec3 cross{ e1.y*e2.z - e1.z*e2.y, e1.z*e2.x - e1.x*e2.z, e1.x*e2.y - e1.y*e2.x };
+            float dot = cross.x*faceNormal.x + cross.y*faceNormal.y + cross.z*faceNormal.z;
+            bool reverse = (dot < 0.0f);
+
+            for (size_t tri = 0; tri < faceVerts.size() - 2; ++tri)
+            {
+                if (reverse)
+                {
+                    indices.push_back(baseVertex);
+                    indices.push_back(baseVertex + (uint32_t)tri + 2);
+                    indices.push_back(baseVertex + (uint32_t)tri + 1);
+                }
+                else
+                {
+                    indices.push_back(baseVertex);
+                    indices.push_back(baseVertex + (uint32_t)tri + 1);
+                    indices.push_back(baseVertex + (uint32_t)tri + 2);
+                }
+            }
+
+            verts.insert(verts.end(), faceVerts.begin(), faceVerts.end());
+        }
+
+        if (verts.empty()) continue;
+
+        BModelGPU& gpu = m_bmodelGPU[mi];
+        gpu.indexCount = (int)indices.size();
+        gpu.boundsMin = bMin;
+        gpu.boundsMax = bMax;
+
+        // Build batches per texinfo
+        struct TexBatch { int texinfo; int firstIndex; int indexCount; };
+        std::vector<TexBatch> texBatches;
+
+        // Simple: one batch per texinfo, walk indices to find boundaries
+        // For correctness, group by face -> texinfo
+        for (int fi = model.firstFace; fi < model.firstFace + model.numFaces; ++fi)
+        {
+            const BSPFace& face = m_faces[fi];
+            if (face.numEdges < 3) continue;
+            if (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size())
+            {
+                int flags = m_texInfos[face.texinfo].flags;
+                if (flags & 0x84) continue;
+            }
+
+            // Find this face's index range in the index array
+            // This is approximate — we walk surfaces to find matching faceIndex
+            for (const auto& surf : m_surfaces)
+            {
+                if (surf.faceIndex == fi)
+                {
+                    int ti = (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size()) ? face.texinfo : -1;
+                    if (texBatches.empty() || texBatches.back().texinfo != ti)
+                    {
+                        texBatches.push_back({ti, (int)surf.indexOffset - (int)model.firstFace * 0, surf.indexCount});
+                    }
+                    else
+                    {
+                        texBatches.back().indexCount += surf.indexCount;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Simpler approach: single batch, all faces share same texture setup
+        // This works because we bind texture per-face in the draw loop
+        // For now, build one batch per unique texinfo by scanning the indices
+        gpu.batches.clear();
+
+        // Group indices by face -> texinfo -> batch
+        // MUST mirror the exact same skip conditions as the index-building loop above
+        // (numEdges < 3, numEdges > 1024, SKY/NODRAW flags) or firstIndex offsets
+        // will be wrong and the GPU will draw garbage triangles.
+        int idxOffset = 0;
+        for (int fi = model.firstFace; fi < model.firstFace + model.numFaces; ++fi)
+        {
+            const BSPFace& face = m_faces[fi];
+            if (face.numEdges < 3 || face.numEdges > 1024) continue;
+
+            if (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size())
+            {
+                int flags = m_texInfos[face.texinfo].flags;
+                if (flags & 0x84) continue;  // SKY | NODRAW
+            }
+
+            int faceIdxCount = (face.numEdges - 2) * 3;
+            if (faceIdxCount <= 0) continue;
+
+            int ti = (face.texinfo >= 0 && face.texinfo < (int)m_texInfos.size()) ? face.texinfo : -1;
+
+            if (gpu.batches.empty() || gpu.batches.back().indexCount == 0)
+            {
+                gpu.batches.push_back({});
+                gpu.batches.back().firstIndex = idxOffset;
+                gpu.batches.back().indexCount = faceIdxCount;
+
+                if (ti >= 0)
+                {
+                    const BSPTexInfo& tex = m_texInfos[ti];
+                    gpu.batches.back().tex = tex.diffuse;
+                    gpu.batches.back().samp = tex.sampler;
+                }
+            }
+            else
+            {
+                TextureHandle thisTex = INVALID_TEXTURE;
+                if (ti >= 0)
+                {
+                    thisTex = m_texInfos[ti].diffuse;
+                }
+
+                if (thisTex == gpu.batches.back().tex)
+                {
+                    gpu.batches.back().indexCount += faceIdxCount;
+                }
+                else
+                {
+                    gpu.batches.push_back({});
+                    gpu.batches.back().firstIndex = idxOffset;
+                    gpu.batches.back().indexCount = faceIdxCount;
+                    if (ti >= 0)
+                    {
+                        gpu.batches.back().tex = m_texInfos[ti].diffuse;
+                        gpu.batches.back().samp = m_texInfos[ti].sampler;
+                    }
+                }
+            }
+
+            idxOffset += faceIdxCount;
+        }
+
+        // Upload to GPU
+        BufferDesc vbDesc{};
+        vbDesc.type = BufferType::Vertex;
+        vbDesc.usage = BufferUsage::Static;
+        vbDesc.size = (uint32_t)(verts.size() * sizeof(BSPVertexPacked));
+        vbDesc.initialData = verts.data();
+        gpu.vertexBuffer = m_gpuBackend->createBuffer(vbDesc);
+
+        BufferDesc ibDesc{};
+        ibDesc.type = BufferType::Index;
+        ibDesc.usage = BufferUsage::Static;
+        ibDesc.size = (uint32_t)(indices.size() * sizeof(uint32_t));
+        ibDesc.initialData = indices.data();
+        gpu.indexBuffer = m_gpuBackend->createBuffer(ibDesc);
+
+        fprintf(stdout, "BSPMap: bmodel[%d] %d verts, %d indices, %d batches\n",
+                mi, (int)verts.size(), (int)indices.size(), (int)gpu.batches.size());
+    }
+}
+
+void nova::BSPMap::uploadBModelsToGPU(IRenderBackend *)
+{
+    buildBModelGeometry();
+}
+
+void nova::BSPMap::releaseBModelGPU(IRenderBackend *backend)
+{
+    for (auto& b : m_bmodelGPU)
+    {
+        if (b.vertexBuffer != INVALID_BUFFER) backend->destroyBuffer(b.vertexBuffer);
+        if (b.indexBuffer != INVALID_BUFFER) backend->destroyBuffer(b.indexBuffer);
+    }
+    m_bmodelGPU.clear();
+}
+
+void nova::BSPMap::renderBModel(IRenderBackend *backend, ShaderHandle shader, int modelIndex, const Vec3& origin)
+{
+    if (modelIndex < 1 || modelIndex >= (int)m_bmodelGPU.size()) return;
+    const BModelGPU& gpu = m_bmodelGPU[modelIndex];
+    if (gpu.vertexBuffer == INVALID_BUFFER || gpu.indexBuffer == INVALID_BUFFER) return;
+
+    // Bmodel vertices are baked at their BSP world positions in GL space.
+    // Compute translation delta: current entity GL position minus the
+    // BSP model's initial position (stored in Q2 coords in the BSP file).
+    const BSPModel& model = m_models[modelIndex];
+    Vec3 modelOriginGL = q2ToGL(model.origin[0], model.origin[1], model.origin[2]);
+    Vec3 offset = origin - modelOriginGL;
+
+    float mat[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        offset.x, offset.y, offset.z, 1.0f
+    };
+
+    // Bind the shader explicitly. glGetUniformLocation queries the given
+    // program, but glUniform* always writes to the CURRENTLY BOUND program.
+    // If a previous render pass (e.g. MD2 models) left a different program
+    // bound, the uniforms below would silently go to the wrong program.
+    glUseProgram(static_cast<GLuint>(shader));
+
+    GLint modelLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelMatrix");
+    GLint modeLoc = glGetUniformLocation(static_cast<GLuint>(shader), "uModelMode");
+    if (modelLoc >= 0) glUniformMatrix4fv(modelLoc, 1, GL_FALSE, mat);
+    if (modeLoc >= 0) glUniform1i(modeLoc, 1);
+
+    backend->bindVertexBuffer(gpu.vertexBuffer, 0, &kLayoutBSP);
+    backend->bindIndexBuffer(gpu.indexBuffer);
+
+    if (m_lmAtlasHandle != INVALID_TEXTURE)
+        backend->bindTexture(m_lmAtlasHandle, m_lmAtlasSampler, 0);
+
+    for (const auto& batch : gpu.batches)
+    {
+        if (batch.indexCount <= 0) continue;
+        if (batch.tex != INVALID_TEXTURE)
+            backend->bindTexture(batch.tex, batch.samp, 1);
+        else
+            backend->bindTexture(m_whiteFallback, m_whiteFallbackSampler, 1);
+        backend->drawIndexed(batch.indexCount, batch.firstIndex);
+    }
+
+    // Reset to identity/world-space
+    float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    if (modelLoc >= 0) glUniformMatrix4fv(modelLoc, 1, GL_FALSE, identity);
+    if (modeLoc >= 0) glUniform1i(modeLoc, 0);
+}

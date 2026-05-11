@@ -91,7 +91,10 @@ public:
     bool isOnGround()     const { return m_grounded; }
 
     // ---- Setters ----
+    // pos = GL-space FEET position (center of hull bottom, NOT hull center).
+    // Camera = pos + kPC_EyeHeight, hull center = pos + kPC_HullHalfY.
     void setPosition(const Vec3& pos) { m_position = pos; }
+    void setGrounded(bool g) { m_grounded = g; }
 
 private:
     void applyGravity(float dt);

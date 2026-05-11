@@ -489,7 +489,7 @@
 "classname" "func_plat"
 "height" "80"
 "speed" "150"
-"wait" " "
+"wait" "3"
 // brush 0
 {
 ( -704 -96 16 ) ( -704 -95 16 ) ( -704 -96 17 ) 1r_floor [ 0 -1 0 0 ] [ 0 0 -1 -80 ] 90 1 1

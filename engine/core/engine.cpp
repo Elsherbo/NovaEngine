@@ -99,6 +99,9 @@
 namespace nova
 {
 
+    // Convert Q2 Z-up world-space to GL Y-up (matches BSPMap::q2ToGL)
+    static inline Vec3 q2ToGL(float x, float y, float z) { return Vec3{x, z, -y}; }
+
     // =====================================================================
     //  GLSL Sources
     // =====================================================================
@@ -495,9 +498,9 @@ void main()
 
         // Standard player hull — consistent with AABBPhysics setPlayerBounds.
         // Physics hull is centered at origin: {-16,-28,-16} to {16,28,16} (32×56×32).
-        // Entity storage uses feet-at-origin convention (Z=0 at feet, Z=32 at head).
-        const Vec3 playerMins = {-kPC_HullHalfX, -kPC_HullHalfY, 0.f};
-        const Vec3 playerMaxs = { kPC_HullHalfX,  kPC_HullHalfY, kPC_HullHalfZ * 2.f};
+        // Entity storage uses feet-at-origin Q2 Z-up convention: Z=0 at feet, Z=56 at head.
+    const Vec3 playerMins = {-kPC_HullHalfX, -kPC_HullHalfZ, 0.f};
+    const Vec3 playerMaxs = { kPC_HullHalfX,  kPC_HullHalfZ, kPC_HullHalfY * 2.f};
 
         // ---- Game DLL ----
         // Load before BSP so game->loadMap() can be called immediately after upload.
@@ -537,10 +540,9 @@ void main()
                         auto* inst = s_pMR->getMD2Instance(idx);
                         return inst ? &inst->angles : nullptr;
                     },
-                    [](void* entityClass, const char* classname) {
+                    [](void* entityClass, const char*) {
                         extern EntityClassRegistry g_entityClasses;
                         g_entityClasses.registerClass(static_cast<EntityClass*>(entityClass));
-                        fprintf(stdout, "[EngineAPI] registered entity class '%s'\n", classname);
                     }
                 );
 
@@ -591,6 +593,21 @@ void main()
                     [](const char* classname) -> EntityHandle {
                         extern EntityList g_entityList;
                         return g_entityList.findByClassname(classname);
+                    },
+                    [](EntityHandle handle, const char* key) -> const char* {
+                        extern EntityList g_entityList;
+                        Entity* e = g_entityList.get(handle);
+                        if (e) return e->getProperty(key);
+                        return nullptr;
+                    },
+                    [](EntityHandle handle, const char* key, const char* value) {
+                        extern EntityList g_entityList;
+                        Entity* e = g_entityList.get(handle);
+                        if (e) e->setProperty(key, value);
+                    },
+                    [](void (*func)(Entity&)) {
+                        extern EntityList g_entityList;
+                        g_entityList.iterateActive(func);
                     }
                 );
 
@@ -598,6 +615,10 @@ void main()
                 {
                     game->setEngineAPI(g_engineAPI);
                     game->init();
+                    // Retroactively set entityClass on player entity now that
+                    // registerGameEntityClasses has registered the "player" class.
+                    if (Entity* pe = g_entityList.get(m_playerEntity))
+                        pe->entityClass = g_entityClasses.find("player");
                 }
 
                 log.info("Engine: game DLL loaded");
@@ -676,6 +697,9 @@ void main()
             {
                 m_bsp->uploadToGPU(m_renderer);
 
+                // ---- Upload bmodel GPU data (brush entities) ----
+                m_bsp->uploadBModelsToGPU(m_renderer);
+
                 // ---- Create IWorld facade ----
                 // BSPWorld wraps BSPMap behind the IWorld interface.
                 // From this point on, all callers (physics, game DLL, MapLoader)
@@ -691,6 +715,15 @@ void main()
                 // g_entityList. The physics external storage (setEntityStorage) only
                 // tracks index 0, so the player MUST be at index 0.
                 m_playerEntity = g_entityList.create("player");
+                Entity* playerEnt = g_entityList.get(m_playerEntity);
+                if (playerEnt)
+                {
+                    // Player hull: kPC constants are in GL space (Y-up).
+                    // Convert to Q2 space (Z-up) for carryEntities compatibility:
+                    //   Q2 X = GL X, Q2 Y = GL Z, Q2 Z = GL Y
+                    playerEnt->mins = Vec3{-kPC_HullHalfX, -kPC_HullHalfZ, 0.f};
+                    playerEnt->maxs = Vec3{ kPC_HullHalfX,  kPC_HullHalfZ, kPC_HullHalfY * 2.f};
+                }
                 static_cast<AABBPhysics*>(m_physics)->setEntityStorage(&m_cameraPosition, &m_cameraVelocity, 1);
 
                 static_cast<AABBPhysics*>(m_physics)->setPlayerBounds(
@@ -720,6 +753,10 @@ void main()
 
                         const char* modelPath = ent->getProperty("model");
                         if (!modelPath || !modelPath[0]) continue;
+
+                        // Skip bmodel paths (brush entities like func_plat) —
+                        // they are rendered separately via renderBModel().
+                        if (modelPath[0] == '*') continue;
 
                         int modelIdx = -1;
 
@@ -920,7 +957,10 @@ void main()
         if (m_bsp)
         {
             if (m_renderer)
+            {
                 m_bsp->releaseGPU(m_renderer);
+                m_bsp->releaseBModelGPU(m_renderer);
+            }
             delete m_bspWorld;
             m_bspWorld = nullptr;
             delete m_bsp;
@@ -1112,8 +1152,70 @@ void main()
             m_camera->applyMouseLook(
                 static_cast<float>(input.mouseDeltaX),
                 static_cast<float>(input.mouseDeltaY));
- 
+
+            // ---- Entity think (func_plat moves, carryEntities fires) ----
+            // Must run BEFORE physics so the platform moves first, and BEFORE
+            // collider rebuild so the new positions are picked up.
+            g_entityList.think(dt);
+
+            // ---- Pre-physics carry: apply platform delta to player physics position ----
+            // During entity think, carryHelper set carriedThisFrame=1 and velocity.z =
+            // s_platDelta.z * 60 if the player is standing on the platform.  Here we
+            // extract the carry delta (velocity.z / 60) and apply it to the player's
+            // physics position BEFORE moveSlide runs.  This lets the physics engine
+            // start from the correct carry position and maintain ground contact
+            // naturally — no after-think fighting required.
+            // Note: we do NOT setGrounded here — isOnGround in moveSlide handles it.
+            // Forcing grounded would prevent the player from dropping off edges.
+            if (Entity* p = g_entityList.get(m_playerEntity))
+            {
+                if (p->carriedThisFrame)
+                {
+                    float carryDeltaY = p->velocity.z / 60.0f;
+                    m_cameraPosition.y += carryDeltaY;
+                    m_cameraVelocity.y = p->velocity.z;
+                    m_playerCtrl->setPosition(m_cameraPosition);
+                }
+            }
+
+            // ---- Build dynamic colliders from moving brush entities ----
+            // Runs AFTER think so colliders reflect the updated entity origins.
+            static DynamicCollider s_colliders[64];
+            size_t colliderCount = 0;
+            if (m_bsp)
+            {
+                for (int i = 0; i < g_entityList.maxIndex() && colliderCount < 64; ++i)
+                {
+                    const Entity* ent = g_entityList.getByIndex(i);
+                    if (!ent) continue;
+                    if (ent->state != STATE_ALIVE) continue;
+                    const char* modelPath = ent->getProperty("model");
+                    if (!modelPath || modelPath[0] != '*') continue;
+
+                    int modelIdx = atoi(modelPath + 1);
+                    if (modelIdx <= 0 || modelIdx >= m_bsp->modelCount()) continue;
+
+                    const BSPModel& mdl = m_bsp->models()[modelIdx];
+                    DynamicCollider& dc = s_colliders[colliderCount++];
+
+                    // Entity origin is Q2-space; convert to GL space for physics.
+                    dc.origin = q2ToGL(ent->origin.x, ent->origin.y, ent->origin.z);
+
+                    // BSP model mins/maxs are Q2-space corners. q2ToGL can
+                    // invert the Z axis (Q2 Y-up → GL Z-up flips sign), so
+                    // we must convert both corners and re-derive mins/maxs.
+                    Vec3 glMins = q2ToGL(mdl.mins[0], mdl.mins[1], mdl.mins[2]);
+                    Vec3 glMaxs = q2ToGL(mdl.maxs[0], mdl.maxs[1], mdl.maxs[2]);
+                    dc.mins = { std::min(glMins.x, glMaxs.x), std::min(glMins.y, glMaxs.y), std::min(glMins.z, glMaxs.z) };
+                    dc.maxs = { std::max(glMins.x, glMaxs.x), std::max(glMins.y, glMaxs.y), std::max(glMins.z, glMaxs.z) };
+                }
+            }
+            if (m_physics)
+                static_cast<AABBPhysics*>(m_physics)->setDynamicColliders(s_colliders, colliderCount);
+
             // ---- PlayerController: movement physics ----
+            // Physics runs AFTER think and collider rebuild so the player
+            // collides with the platform at its new position.
             if (m_playerCtrl)
             {
                 m_playerCtrl->update(input, dt,
@@ -1121,17 +1223,22 @@ void main()
                                       m_camera->getRight());
                 m_camera->setPosition(m_playerCtrl->getEyePosition());
             }
- 
-            // ---- Entity think ----
-            g_entityList.think(dt);
- 
+
+            // ---- Sync player entity origin from camera ----
+            // Camera is at eye level (hull_center + kPC_EyeHeight).
+            // Entity origin must be at FEET level in Q2 space (Z-up).
+            // feetGl = cam - eyeHeight - hullHalfY = hull_center - hullHalfY = feet
+            // p->origin[Q2] = {GL.x, -GL.z, GL.y} (GL Y-up → Q2 Z-up)
+            if (Entity* p = g_entityList.get(m_playerEntity))
+            {
+                Vec3 cam = m_camera->getPosition();
+                Vec3 feetGl = Vec3{ cam.x, cam.y - kPC_EyeHeight - kPC_HullHalfY, cam.z };
+                p->origin = Vec3{ feetGl.x, -feetGl.z, feetGl.y };
+            }
+
             // ---- Game DLL think ----
             if (IGameModule* game = m_gameDLL.get())
                 game->think(dt);
- 
-            // ---- Sync player entity origin ----
-            if (Entity* p = g_entityList.get(m_playerEntity))
-                p->origin = m_camera->getPosition();
  
         } // end !consoleOpen
  
@@ -1200,6 +1307,25 @@ void main()
 
             Vec3 camPos = m_camera->getPosition();
             m_modelRenderer.renderAll(m_renderer, m_shader, m_bsp, &camPos);
+        }
+
+        // ---- BModel Rendering (brush entities like func_plat, func_door) ----
+        if (m_bsp)
+        {
+            for (int i = 0; i < g_entityList.maxIndex(); ++i)
+            {
+                const Entity* ent = g_entityList.getByIndex(i);
+                if (!ent) continue;
+
+                const char* modelPath = ent->getProperty("model");
+                if (!modelPath || modelPath[0] != '*') continue;
+
+                int modelIdx = atoi(modelPath + 1);
+                if (modelIdx <= 0) continue;
+
+                Vec3 glOrigin = {ent->origin.x, ent->origin.z, -ent->origin.y};
+                m_bsp->renderBModel(m_renderer, m_shader, modelIdx, glOrigin);
+            }
         }
 
         // ---- Console overlay (renders on top of everything) ----

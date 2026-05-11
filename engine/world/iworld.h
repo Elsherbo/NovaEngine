@@ -72,6 +72,17 @@ public:
     // Raw entity-lump string from the BSP.
     // MapLoader uses this; no other caller should need it.
     virtual const char* getEntityString() const = 0;
+
+    // Get the world-space origin of a BSP submodel (Q2 coords).
+    // modelIndex=0 is the world model (always at origin).
+    // modelIndex>=1 are brush entity submodels.
+    // Returns Vec3::zero() if the index is out of range.
+    virtual Vec3 getBModelOrigin(int modelIndex) const = 0;
+
+    // Get the local bounding box of a BSP submodel (Q2 coords, relative to model origin).
+    // modelIndex=0 is the world model.
+    // Returns zero vectors if the index is out of range.
+    virtual void getBModelBounds(int modelIndex, Vec3& mins, Vec3& maxs) const = 0;
 };
 
 } // namespace nova

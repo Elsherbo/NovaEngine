@@ -137,6 +137,11 @@ AABBPhysics::AABBPhysics()
 }
 
 void AABBPhysics::setWorld(IBSPCollisionWorld* bsp) { m_bsp = bsp; }
+void AABBPhysics::setDynamicColliders(const DynamicCollider* colliders, size_t count)
+{
+    m_dynamicColliders = colliders;
+    m_dynamicColliderCount = count;
+}
 void AABBPhysics::setEntityStorage(Vec3* o, Vec3* v, size_t count)
 {
     m_entOrigin   = o;
@@ -223,7 +228,96 @@ bool AABBPhysics::testSolid(const Vec3& origin,
 }
 
 // -----------------------------------------------------------------------
-//  traceWorld — brute-force swept AABB vs all solid brushes
+//  traceAABB — swept AABB vs static AABB.
+//  Uses the slab method: expand the moving AABB by the static AABB's extents
+//  to form a swept-box, then find the earliest entry time.
+// -----------------------------------------------------------------------
+TraceResult AABBPhysics::traceAABB(const Vec3& start, const Vec3& dir, float dist,
+    const Vec3& mins, const Vec3& maxs,
+    const Vec3& boxOrigin, const Vec3& boxMins, const Vec3& boxMaxs)
+{
+    TraceResult r;
+    r.fraction = 1.0f;
+    r.endPos   = start + dir;
+
+    if (dist < kMinMoveDist) return r;
+
+    // Expand the box by the moving hull extents (Minkowski sum).
+    // box is [boxOrigin + boxMins, boxOrigin + boxMaxs].
+    // hull is [mins, maxs] relative to start.
+    // Expanded box: center at boxOrigin + (boxMins+boxMaxs)/2,
+    //   half-extents = (boxMaxs-boxMins)/2 + (maxs-mins)/2.
+    Vec3 boxCenter = boxOrigin + Vec3{
+        (boxMins.x + boxMaxs.x) * 0.5f,
+        (boxMins.y + boxMaxs.y) * 0.5f,
+        (boxMins.z + boxMaxs.z) * 0.5f
+    };
+    Vec3 hullCenter = Vec3{
+        (mins.x + maxs.x) * 0.5f,
+        (mins.y + maxs.y) * 0.5f,
+        (mins.z + maxs.z) * 0.5f
+    };
+    Vec3 hullExtents = Vec3{
+        (maxs.x - mins.x) * 0.5f,
+        (maxs.y - mins.y) * 0.5f,
+        (maxs.z - mins.z) * 0.5f
+    };
+    Vec3 boxExtents = Vec3{
+        (boxMaxs.x - boxMins.x) * 0.5f,
+        (boxMaxs.y - boxMins.y) * 0.5f,
+        (boxMaxs.z - boxMins.z) * 0.5f
+    };
+
+    // Swept box center = boxCenter, swept half-extents = boxExtents + hullExtents.
+    Vec3 sweepExtents = boxExtents + hullExtents;
+
+    // Starting distance from sweep center to box center.
+    Vec3 delta = start + hullCenter - boxCenter;
+    Vec3 moveDir = dir * (1.0f / dist);
+
+    float entryT = 0.0f;
+    float exitT  = dist;
+    Vec3  entryN = Vec3::zero();
+
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        float d = (axis == 0) ? delta.x : (axis == 1) ? delta.y : delta.z;
+        float e = (axis == 0) ? sweepExtents.x : (axis == 1) ? sweepExtents.y : sweepExtents.z;
+        float md = (axis == 0) ? moveDir.x : (axis == 1) ? moveDir.y : moveDir.z;
+
+        if (std::abs(md) < 1e-7f)
+        {
+            // Parallel: check if already overlapping
+            if (std::abs(d) > e + kClipEpsilon)
+            {
+                // No overlap at all
+                return r;
+            }
+            continue;
+        }
+
+        float t1 = (-e - d) / md;  // entry time
+        float t2 = ( e - d) / md;  // exit time
+
+        if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > entryT) { entryT = t1; entryN = Vec3::zero(); if (axis == 0) entryN = Vec3{1,0,0}; else if (axis == 1) entryN = Vec3{0,1,0}; else entryN = Vec3{0,0,1}; if (d < 0) entryN = -entryN; }
+        if (t2 < exitT) exitT = t2;
+
+        if (entryT > exitT) return r;  // no collision
+    }
+
+    if (entryT >= 0.0f && entryT < dist)
+    {
+        r.fraction = entryT / dist;
+        r.endPos   = start + moveDir * entryT;
+        r.normal   = entryN;
+    }
+
+    return r;
+}
+
+// -----------------------------------------------------------------------
+//  traceWorld — brute-force swept AABB vs all solid brushes + dynamic colliders
 //
 //  Uses the Minkowski expansion + slab intersection method:
 //    For each brush, maintain [enterT, exitT].
@@ -239,6 +333,17 @@ TraceResult AABBPhysics::traceWorld(const Vec3& start, const Vec3& dir, float di
     TraceResult r;
 r.fraction = 1.0f;
 r.endPos   = start + dir;
+
+// ---- Dynamic colliders first (moving platforms, doors, etc.) ----
+for (size_t di = 0; di < m_dynamicColliderCount; ++di)
+{
+    const DynamicCollider& dc = m_dynamicColliders[di];
+    TraceResult ar = traceAABB(start, dir, dist, mins, maxs, dc.origin, dc.mins, dc.maxs);
+    if (ar.fraction < r.fraction)
+    {
+        r = ar;
+    }
+}
 
 if (!m_bsp || m_bsp->brushCount() == 0)
 return r;

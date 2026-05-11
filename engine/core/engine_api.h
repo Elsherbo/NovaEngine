@@ -63,6 +63,15 @@ struct EngineAPI
 
     // Find entity by classname. Returns invalid handle if not found.
     EntityHandle (*findEntityByClassname)(const char* classname);
+
+    // Get entity property value (cross-DLL safe, reads from engine-side store).
+    const char* (*getEntityProperty)(EntityHandle handle, const char* key);
+
+    // Set entity property value (cross-DLL safe, writes to engine-side store).
+    void (*setEntityProperty)(EntityHandle handle, const char* key, const char* value);
+
+    // Iterate all active entities (cross-DLL safe, uses engine-side EntityList).
+    void (*iterateActiveEntities)(void (*func)(Entity&));
 };
 
 // Global engine API pointer — set by Engine before GameModule::init().
@@ -79,6 +88,9 @@ typedef EntityHandle (*PFN_CreateModelEntity)(const char*, const Vec3&, const ch
 typedef void (*PFN_SetEntityOrigin)(EntityHandle, const Vec3&);
 typedef Vec3 (*PFN_GetEntityOriginFromPool)(EntityHandle);
 typedef EntityHandle (*PFN_FindEntityByClassname)(const char*);
+typedef const char* (*PFN_GetEntityProperty)(EntityHandle, const char*);
+typedef void (*PFN_SetEntityProperty)(EntityHandle, const char*, const char*);
+typedef void (*PFN_IterateActiveEntities)(void(*)(Entity&));
 
 // Called by Engine at startup to wire renderer callbacks and entity class registrar.
 // The game DLL never calls this — it's purely an engine-side bootstrap.
@@ -91,8 +103,11 @@ void EngineAPI_setModelRenderer(void* renderer,
 
 // Called by Engine at startup to wire runtime entity creation callbacks.
 void EngineAPI_setEntityOps(PFN_CreateModelEntity createModel,
-                             PFN_SetEntityOrigin setOrigin,
-                             PFN_GetEntityOriginFromPool getOriginFromPool,
-                             PFN_FindEntityByClassname findByClassname);
+                              PFN_SetEntityOrigin setOrigin,
+                              PFN_GetEntityOriginFromPool getOriginFromPool,
+                              PFN_FindEntityByClassname findByClassname,
+                              PFN_GetEntityProperty getProp,
+                              PFN_SetEntityProperty setProp,
+                              PFN_IterateActiveEntities iterateActive);
 
 } // namespace nova

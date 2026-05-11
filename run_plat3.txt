@@ -1,0 +1,10 @@
+[2026-05-08 23:49:12] [INFO] Nova Engine Phase 1 initializing...
+Assets: mounted BSP root 'assets'
+Assets: mounted BSP dir 'assets/maps'
+Assets: mounted game dir 'build/assets'
+Assets: mounted 'assets/' (models, fonts, etc.)
+Engine: EntityFactory initialized (10 built-in classes)
+GameDLLLoader: loaded 'build/assets/nova_game.dll'
+[2026-05-08 23:49:20] [INFO] EntityClassRegistry: registered 'info_player_deathmatch'
+[EngineAPI] registered entity class 'info_player_deathmatch'
+[2026-05-08 23:49:20] [INFO] EntityClassRegistry: registered 'func_plat'

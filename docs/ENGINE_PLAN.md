@@ -3,7 +3,7 @@
   NOVA ENGINE — Game Engine Development Master Plan
 ========================================================================
   Quake 2 Foundation  →  Source Engine Capabilities
-  Revision 1.2  |  Start: TBD  |  Codename: NOVA
+  Revision 1.3  |  Start: TBD  |  Codename: NOVA
 ========================================================================
 
   HOW TO USE THIS DOCUMENT
@@ -236,13 +236,15 @@
 |                          |                                  |               | each frame                               |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | Engine Main Loop         | core/engine.cpp                  | DONE          | Fixed-timestep loop; FPS counter in      |
-|                          |                                  |               | title; BSP load + physics spawn; UBO     |
-|                          |                                  |               | update per frame; F1 mouse grab toggle;  |
-|                          |                                  |               | F2 debug-view cycle                      |
-|                          |                                  |               | (lit/lm-gray/lm-boost/lm-uv); F3 PVS     |
-|                          |                                  |               | stats. EntityList + m_playerEntity       |
-|                          |                                  |               | wired; think(dt) called per frame;       |
-|                          |                                  |               | player origin synced from camera.        |
+|                          |                                  |               | title. Per-frame: mouse look, entity     |
+|                          |                                  |               | think (func_plat moves + carryEntities), |
+|                          |                                  |               | dynamic collider rebuild,                |
+|                          |                                  |               | PlayerController physics + moveSlide,    |
+|                          |                                  |               | after-think carry propagation (velocity  |
+|                          |                                  |               | + grounded), player entity origin sync   |
+|                          |                                  |               | from camera. F1 grab toggle, F2          |
+|                          |                                  |               | debug-view cycle, F3 PVS stats. Game DLL |
+|                          |                                  |               | think at frame end.                      |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 
   >> 4.2 Key Interfaces
@@ -290,12 +292,29 @@
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | System / Class           | Source File(s)                   | Status        | Notes / Next Steps                       |
 +==========================+==================================+===============+==========================================+
-| IGameModule interface    | engine/entities/igame_module.h   | TODO          | Engine<->game contract: init, shutdown,  |
-|                          |                                  |               | think, onEntitySpawn, onCollision. Stub  |
-|                          |                                  |               | header exists; no implementation yet.    |
+| IGameModule interface    | engine/entities/igame_module.h   | DONE          | Engine<->game contract: init, shutdown,  |
+|                          |                                  |               | think, loadMap, onEntitySpawn,           |
+|                          |                                  |               | onEntityTouch, onEntityDestroy.          |
+|                          |                                  |               | GameModule in game DLL implements it.    |
+|                          |                                  |               | Engine calls game->init() then           |
+|                          |                                  |               | game->loadMap() after BSP load,          |
+|                          |                                  |               | game->think() each frame.                |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| GameDLL loader           | engine/entities/game_dll_loader… | TODO          | dlopen/LoadLibrary; hot-reload on file   |
-|                          |                                  |               | change for fast iteration. Stub exists.  |
+| GameDLL loader           | engine/entities/game_dll_loader… | DONE          | LoadLibrary-based. Loads nova_game.dll,  |
+|                          |                                  |               | resolves GetGameModule() symbol, returns |
+|                          |                                  |               | IGameModule*. Hot-reload not yet         |
+|                          |                                  |               | implemented.                             |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| EngineAPI (cross-DLL)    | engine/core/engine_api.h/.cpp    | DONE          | C-compatible function table passed to    |
+|                          |                                  |               | game DLL on init. Exposes setEntityAnim, |
+|                          |                                  |               | registerEntityClass, createModelEntity,  |
+|                          |                                  |               | set/getEntityOrigin,                     |
+|                          |                                  |               | findEntityByClassname,                   |
+|                          |                                  |               | get/setEntityProperty,                   |
+|                          |                                  |               | iterateActiveEntities. Static stubs in   |
+|                          |                                  |               | engine_api.cpp handle entity pool        |
+|                          |                                  |               | access; renderer callbacks wired by      |
+|                          |                                  |               | Engine at startup.                       |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | EntityID / EntityHandle  | engine/entities/entity_id.h      | DONE          | Generational index: 16-bit generation +  |
 |                          |                                  |               | 15-bit index packed into 32 bits.        |
@@ -304,28 +323,62 @@
 |                          |                                  |               | safe frame-scoped access. All tests      |
 |                          |                                  |               | pass.                                    |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| EntityList               | engine/entities/entity_list.h/.… | IN PROGRESS   | Flat static arrays, kMaxEntities=1024,   |
+| EntityList               | engine/entities/entity_list.h/.… | DONE          | Flat static arrays, kMaxEntities=1024,   |
 |                          |                                  |               | zero heap allocation. O(1)               |
 |                          |                                  |               | create/destroy via free-list stack.      |
-|                          |                                  |               | create() sets STATE_ALIVE; destroy()     |
-|                          |                                  |               | sets STATE_FREE. iterateActive,          |
-|                          |                                  |               | iterateByClassname, findByClassname,     |
-|                          |                                  |               | findInAABB, think(dt).                   |
-|                          |                                  |               | tests/entities/test_entity.cpp and       |
-|                          |                                  |               | tests/physics/test_ground.cpp pass.      |
-|                          |                                  |               | EntityFactory + MapLoader integration    |
-|                          |                                  |               | still TODO.                              |
+|                          |                                  |               | iterateActive, iterateByClassname,       |
+|                          |                                  |               | findByClassname, findInAABB, think(dt).  |
+|                          |                                  |               | Engine EntityList created as global,     |
+|                          |                                  |               | shared (separately compiled) across      |
+|                          |                                  |               | engine + game DLL.                       |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| Entity (base struct)     | engine/entities/entity.h         | IN PROGRESS   | Full struct: origin, velocity,           |
-|                          |                                  |               | mins/maxs, angles, classname[32],        |
-|                          |                                  |               | EntityState (FREE/ALIVE/DEAD),           |
-|                          |                                  |               | think/touch/use/pain/die raw fn ptrs,    |
-|                          |                                  |               | nextThink, health, flags, handles.       |
-|                          |                                  |               | STATE_ALIVE set on create(); STATE_FREE  |
-|                          |                                  |               | set on destroy(). Test passing.          |
+| Entity (base struct)     | engine/entities/entity.h         | DONE          | 480 bytes on MSVC x64 (static_assert).   |
+|                          |                                  |               | origin/velocity/mins/maxs/angles,        |
+|                          |                                  |               | classname[32], model[32], EntityState    |
+|                          |                                  |               | lifecycle, EntityClass* ptr for virtual  |
+|                          |                                  |               | dispatch, carriedThisFrame flag, plat    |
+|                          |                                  |               | state fields (platStartPos/TargetPos,    |
+|                          |                                  |               | height/speed/wait/timer/state),          |
+|                          |                                  |               | animRequest[32], target/targetname,      |
+|                          |                                  |               | aiThinkTimer, think/touch/use/pain/die   |
+|                          |                                  |               | fn ptrs, property store integration.     |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| EntityFactory            | entities/entity_factory.cpp      | TODO          | Registry of classname -> spawn function; |
-|                          |                                  |               | loaded from game DLL. Not yet started.   |
+| EntityFactory            | engine/entities/entity_factory.… | DONE          | Classname→spawn function registry.       |
+|                          |                                  |               | init() registers built-in classes        |
+|                          |                                  |               | (light, info_player_start, etc.),        |
+|                          |                                  |               | parseOrigin, parseAngles, parseInt,      |
+|                          |                                  |               | parseFloat helpers. Engine calls         |
+|                          |                                  |               | EntityFactory::init() before BSP load.   |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| MapLoader (.bsp spawn)   | engine/entities/map_loader.cpp   | DONE          | Parses entity lump from .bsp; calls      |
+|                          |                                  |               | EntityFactory::spawn() for each entity.  |
+|                          |                                  |               | Extracts origin, angles, spawnflags,     |
+|                          |                                  |               | health, target/targetname, property      |
+|                          |                                  |               | store keys. For brush entities           |
+|                          |                                  |               | (model=*N): reads bmodel origin +        |
+|                          |                                  |               | mins/maxs from BSP submodel data. Calls  |
+|                          |                                  |               | finalize() to trigger                    |
+|                          |                                  |               | EntityClass::onSpawn().                  |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| PropertyStore            | engine/entities/property_store.h | DONE          | Cross-DLL safe key-value store indexed   |
+|                          |                                  |               | by entity handle. get/set/has methods.   |
+|                          |                                  |               | Populated by MapLoader from BSP entity   |
+|                          |                                  |               | lump; read by game DLL through           |
+|                          |                                  |               | EngineAPI.                               |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| EntityClass system       | engine/entities/entity_class.h/… | DONE          | EntityClass base with virtual            |
+|                          |                                  |               | onSpawn/onThink/onPain/onDie/onTouch/on… |
+|                          |                                  |               | hooks. EntityClassRegistry maps          |
+|                          |                                  |               | classname→EntityClass*. Engine-side      |
+|                          |                                  |               | global g_entityClasses. Game DLL         |
+|                          |                                  |               | registers classes through                |
+|                          |                                  |               | EngineAPI::registerEntityClass.          |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| PlayerEntityClass        | game/src/game_entity_classes.h/… | DONE          | Minimal no-op EntityClass registered by  |
+|                          |                                  |               | game DLL so player entity has valid      |
+|                          |                                  |               | entityClass pointer. Player logic driven |
+|                          |                                  |               | by engine-side PlayerController, not     |
+|                          |                                  |               | onThink.                                 |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | IPhysicsWorld interface  | engine/physics/iphysics_world.h  | DONE          | Pure virtual: setWorld, step,            |
 |                          |                                  |               | setOrigin/Velocity, getOrigin/Velocity,  |
@@ -336,25 +389,84 @@
 |                          |                                  |               | struct with fraction, endPos, normal,    |
 |                          |                                  |               | startSolid.                              |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| AABBPhysics              | engine/physics/aabb_physics.h/.… | IN PROGRESS   | setEntityStorage(Vec3* origin, Vec3*     |
-|                          |                                  |               | velocity, count) wires raw storage for   |
+| AABBPhysics              | engine/physics/aabb_physics.h/.… | DONE          | setEntityStorage(Vec3* origin, Vec3*     |
+|                          |                                  |               | velocity, count) wires raw arrays for    |
 |                          |                                  |               | physics. setPlayerBounds, testSolid      |
 |                          |                                  |               | (spawn escape), isOnGround,              |
 |                          |                                  |               | getGroundElevation, setGravity. Swept    |
-|                          |                                  |               | AABB vs BSP. moveSlide with 2-plane      |
-|                          |                                  |               | crease fix. test_ground.cpp passes. Full |
-|                          |                                  |               | PM_StepSlideMove and water movement      |
-|                          |                                  |               | still TODO.                              |
+|                          |                                  |               | AABB vs BSP + dynamic colliders.         |
+|                          |                                  |               | moveSlide with 2-plane crease fix,       |
+|                          |                                  |               | step-up with ceiling check, startSolid   |
+|                          |                                  |               | guard. All tests pass. Full water        |
+|                          |                                  |               | movement still TODO.                     |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| BSP Collision            | physics/aabb/bsp_trace.cpp       | TODO          | CM_BoxTrace against BSP planes; returns  |
-|                          |                                  |               | trace_t (fraction, normal, ent). Exists  |
-|                          |                                  |               | inside AABBPhysics but not broken out as |
-|                          |                                  |               | standalone module yet.                   |
+| DynamicCollider          | engine/physics/aabb_physics.h    | DONE          | AABB collider struct for moving brush    |
+|                          |                                  |               | entities. setDynamicColliders() on       |
+|                          |                                  |               | AABBPhysics. Rebuilt each frame from     |
+|                          |                                  |               | entity positions after think(). Platform |
+|                          |                                  |               | collision works through this system.     |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
-| PlayerMove               | physics/aabb/player_move.cpp     | TODO          | Full ground/air/water movement; wish     |
-|                          |                                  |               | velocity; friction; gravity; step-up.    |
-|                          |                                  |               | Currently handled partially inside       |
-|                          |                                  |               | AABBPhysics::moveSlide.                  |
+| PlayerController         | engine/player/player_controller… | DONE          | First-person movement controller. Wish   |
+|                          |                                  |               | direction from WASD, jump with space,    |
+|                          |                                  |               | sprint with shift. CVar-driven feel:     |
+|                          |                                  |               | pc_jumpspeed/movespeed/groundaccel/aira… |
+|                          |                                  |               | Ground detection, gravity, friction,     |
+|                          |                                  |               | acceleration. Velocity/position synced   |
+|                          |                                  |               | with AABBPhysics backing store each      |
+|                          |                                  |               | frame. Camera at getEyePosition() =      |
+|                          |                                  |               | m_position + kPC_EyeHeight.              |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| FuncPlat (moving plat)   | game/src/game_entity_classes.h   | DONE          | Cyclic vertical moving platform via      |
+|                          |                                  |               | EntityClass::onThink. Reads              |
+|                          |                                  |               | height/speed/wait from TrenchBroom       |
+|                          |                                  |               | properties through EngineAPI.            |
+|                          |                                  |               | carryEntities() lifts players standing   |
+|                          |                                  |               | on platform: Q2 AABB overlap test with   |
+|                          |                                  |               | tolerance [-4, +2], delta applied to     |
+|                          |                                  |               | entity origin, velocity inherited.       |
+|                          |                                  |               | Engine after-think propagates carry to   |
+|                          |                                  |               | physics backing store.                   |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| ConsoleVar (cvar)        | engine/core/cvar.cpp             | DONE          | CVarSystem singleton. reg(name, default, |
+|                          |                                  |               | desc) creates CVar. find() lookup by     |
+|                          |                                  |               | name. get/set via CVar*. CVar::value is  |
+|                          |                                  |               | a plain float member, zero-overhead      |
+|                          |                                  |               | read. Inline registration for            |
+|                          |                                  |               | PlayerController feel cvars. Engine      |
+|                          |                                  |               | cvars: r_debugview, sv_cheats.           |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Console                  | engine/core/console.cpp          | DONE          | In-game drop-down console toggled with   |
+|                          |                                  |               | tilde (~). Line input, command parsing,  |
+|                          |                                  |               | cvar get/set. addLogLine() for engine    |
+|                          |                                  |               | log hook. Mouse grab toggle via          |
+|                          |                                  |               | callback. Q2-style conchars font or      |
+|                          |                                  |               | built-in IBM CP437 8x8 fallback.         |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Text2D / Console font    | engine/core/text_2d.h/.cpp       | DONE          | Bitmap font rendering for console and    |
+|                          |                                  |               | HUD. Supports Q2 conchars (normal +      |
+|                          |                                  |               | alternate set) and generic bitmap fonts. |
+|                          |                                  |               | Built-in IBM CP437 8x8 fallback if no    |
+|                          |                                  |               | font file found.                         |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Model Renderer (MD2)     | engine/renderer/models/md2_load… | DONE          | Load Quake 2 .md2 vertex-animated        |
+|                          |                                  |               | models; lerp between frames.             |
+|                          |                                  |               | ModelRenderer class with loadMD2Model,   |
+|                          |                                  |               | registerEntity, setEntityAnim,           |
+|                          |                                  |               | setEntityAnimRange. OBJ static mesh      |
+|                          |                                  |               | loader also implemented.                 |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Sprite Renderer          | renderer/sprite.cpp              | TODO          | Billboard sprites for particles,         |
+|                          |                                  |               | explosions, pickups                      |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Particle System (basic)  | renderer/particles/particles.cpp | TODO          | CPU-simulated particles: spawn, update,  |
+|                          |                                  |               | fade, billboard render                   |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| HUD / 2D Renderer        | renderer/hud/hud.cpp             | TODO          | Orthographic quads for health bar, ammo  |
+|                          |                                  |               | counter, crosshair                       |
++--------------------------+----------------------------------+---------------+------------------------------------------+
+| Water movement           | engine/physics/aabb_physics.cpp  | TODO          | Swim physics: buoyancy, water drag,      |
+|                          |                                  |               | surface detection. Not yet implemented — |
+|                          |                                  |               | player falls through water brushes.      |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | INetworkSystem interface | network/inetwork.h               | TODO          | connect, disconnect, sendPacket,         |
 |                          |                                  |               | receivePackets — pure virtual            |
@@ -376,27 +488,6 @@
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 | OpenALAudio              | audio/openal/openal_audio.cpp    | TODO          | 3D positional audio; WAV/OGG playback;   |
 |                          |                                  |               | distance attenuation                     |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| ConsoleVar (cvar)        | engine/cvar.cpp                  | TODO          | Runtime variables (sv_gravity, cl_fov    |
-|                          |                                  |               | etc.); serialized to config.cfg          |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| Console                  | engine/console.cpp               | TODO          | In-game drop-down console; command       |
-|                          |                                  |               | parsing; cvar get/set                    |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| MapLoader (.bsp spawn)   | entities/map_loader.cpp          | TODO          | Parse entity lump from .bsp; call        |
-|                          |                                  |               | EntityFactory to spawn all entities      |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| Model Renderer (MD2)     | renderer/models/md2.cpp          | TODO          | Load Quake 2 .md2 vertex-animated        |
-|                          |                                  |               | models; lerp between frames              |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| Sprite Renderer          | renderer/sprite.cpp              | TODO          | Billboard sprites for particles,         |
-|                          |                                  |               | explosions, pickups                      |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| Particle System (basic)  | renderer/particles/particles.cpp | TODO          | CPU-simulated particles: spawn, update,  |
-|                          |                                  |               | fade, billboard render                   |
-+--------------------------+----------------------------------+---------------+------------------------------------------+
-| HUD / 2D Renderer        | renderer/hud/hud.cpp             | TODO          | Orthographic quads for health bar, ammo  |
-|                          |                                  |               | counter, crosshair                       |
 +--------------------------+----------------------------------+---------------+------------------------------------------+
 
   >> Networking Architecture — Server/Client Data Flow Per Tick
@@ -426,12 +517,16 @@
   >> Acceptance Criteria
   ------------------------
 
-  [ ] Player can load a map, spawn, move (walk/jump/swim), and shoot a projectile
-  [ ] Game logic (damage, pickups, doors) lives entirely in game.dll with zero engine changes
-  [ ] Two clients can connect to a local server and see each other moving
-  [ ] Console opens with tilde (~), cvars are readable and settable
-  [ ] Audio plays 3D sounds attached to entities
-  [ ] All Phase 2 systems show DONE in the table above
+  [x] Player loads a map, spawns on info_player_start, walks and jumps (WASD + space)
+  [x] Game DLL separation works — engine + game are separate binaries linked through IGameModule + EngineAPI
+  [x] FuncPlat entities carry the player (moving platform with AABB carry detection + velocity inheritance)
+  [x] Console opens with tilde (~), cvars are readable and settable
+  [x] EntityClass system lets game DLL define entity behavior (FuncPlat, MonsterClass, PlayerEntityClass) without engine changes
+  [ ] ⬜ Swimming not yet implemented — player falls through water brushes
+  [ ] ⬜ Shooting / projectiles not yet implemented
+  [ ] ⬜ Networking not yet implemented (Server + Client + DeltaCompressor + PacketBuffer)
+  [ ] ⬜ Audio not yet implemented (IAudioSystem + OpenALAudio)
+  [ ] ⬜ Sprite / Particle / HUD rendering not yet implemented
 
 
 ────────────────────────────────────────────────────────────────────────
@@ -681,34 +776,28 @@
 +----------------+----------------------+---------------+----------------------------------------------------+
 | Library        | Directory            | Status        | Notes                                              |
 +================+======================+===============+====================================================+
-| SDL2           | platform/sdl2/       | TODO          | v2.28+; window, input, OpenGL context, file I/O    |
-|                |                      |               | wrappers                                           |
+| SDL3           | vendor/SDL3/         | DONE          | v3.2+; window, input, OpenGL context. Relative     |
+|                |                      |               | mouse mode for FPS look.                           |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| OpenGL 4.5     | renderer/gl/         | TODO          | Via GLAD loader; 4.5 core profile; DSA (direct     |
+| OpenGL 4.5     | renderer/gl/         | DONE          | Via GLAD loader; 4.5 core profile; DSA (direct     |
 |                |                      |               | state access) for clarity                          |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| GLAD           | vendor/glad/         | TODO          | OpenGL function loader; generate for GL 4.5 +      |
-|                |                      |               | extensions needed                                  |
+| GLAD           | vendor/GLAD/         | DONE          | OpenGL function loader; GL 4.5 core profile        |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| GLM            | vendor/glm/          | TODO          | Header-only math; used only in tool scripts —      |
+| stb_image      | vendor/stb/          | DONE          | Single-header image loader for PNG/JPG/TGA/WAL     |
+|                |                      |               | texture loading                                    |
++----------------+----------------------+---------------+----------------------------------------------------+
+| GLM            | vendor/glm/          | TODO          | Header-only math; planned for tool scripts —       |
 |                |                      |               | engine uses its own math                           |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| OpenAL Soft    | audio/openal/        | TODO          | v1.23+; EFX extension for reverb; cross-platform   |
+| OpenAL Soft    | audio/openal/        | TODO          | Phase 2+; EFX extension for reverb;                |
+|                |                      |               | cross-platform. Not started.                       |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| stb_image      | vendor/stb/          | TODO          | Single-header image loader for PNG/JPG/TGA texture |
-|                |                      |               | loading                                            |
+| Jolt Physics   | physics/jolt/        | TODO          | Phase 3+; MIT license; replace AABBPhysics         |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| Jolt Physics   | physics/jolt/        | TODO          | Phase 3+; MIT license; excellent performance;      |
-|                |                      |               | replace AABBPhysics                                |
+| Lua 5.4        | scripting/lua/       | TODO          | Phase 3+; embed as static lib                      |
 +----------------+----------------------+---------------+----------------------------------------------------+
-| Lua 5.4        | scripting/lua/       | TODO          | Phase 3+; embed as static lib; bind via sol2 or    |
-|                |                      |               | manual stack API                                   |
-+----------------+----------------------+---------------+----------------------------------------------------+
-| Vulkan SDK     | renderer/vulkan/     | TODO          | Phase 4+; VMA for memory allocation; vkbootstrap   |
-|                |                      |               | for init                                           |
-+----------------+----------------------+---------------+----------------------------------------------------+
-| Catch2         | vendor/catch2/       | TODO          | Unit test framework; one test executable per       |
-|                |                      |               | module                                             |
+| Vulkan SDK     | renderer/vulkan/     | TODO          | Phase 4+; VMA + vkbootstrap                        |
 +----------------+----------------------+---------------+----------------------------------------------------+
 
 ────────────────────────────────────────────────────────────────────────
@@ -718,34 +807,41 @@
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
 | Test File                          | Covers                         | Status        | Notes                                    |
 +====================================+================================+===============+==========================================+
-| tests/core/test_math.cpp           | Tests: Vec3, Mat4, Quat, AABB  | TODO          | Test dot/cross/normalize, mat4 mul,      |
-|                                    |                                |               | frustum planes, AABB overlap             |
+| tests/core/test_math.cpp           | Tests: Vec3, Mat4, Quat        | DONE          | Dot/cross/normalize, mat4 mul, frustum   |
+|                                    |                                |               | planes. 33 lines, plain assert().        |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
-| tests/core/test_memory.cpp         | Tests: Arena, Zone, Pool       | TODO          | Alloc/free/reset; out-of-memory          |
-|                                    |                                |               | handling; alignment checks               |
+| tests/core/test_memory.cpp         | Tests: Arena, Zone, Pool       | DONE          | Alloc/free/reset; out-of-memory          |
+|                                    |                                |               | handling; alignment checks. All pass.    |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
-| tests/renderer/test_bsp.cpp        | Tests: BSP load + PVS          | TODO          | Load test.bsp; verify leaf count, PVS    |
-|                                    |                                |               | bits, surface counts                     |
+| tests/core/test_log.cpp            | Tests: Logger levels + hook    | DONE          | DEBUG/INFO/WARN/ERROR levels; log hook   |
+|                                    |                                |               | callback. All pass.                      |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
-| tests/physics/test_ground.cpp      | Tests: ground, gravity, trace, | IN PROGRESS   | isOnGround (no BSP), getGroundElevation, |
+| tests/renderer/test_bsp.cpp        | Tests: BSP load + PVS          | DONE          | Load test.bsp; verify leaf count, model  |
+|                                    |                                |               | count, PVS bits. All pass.               |
++------------------------------------+--------------------------------+---------------+------------------------------------------+
+| tests/physics/test_ground.cpp      | Tests: ground, gravity, trace, | DONE          | isOnGround (no BSP), getGroundElevation, |
 |                                    | entity storage                 |               | gravity default/set, player bounds,      |
 |                                    |                                |               | trace fraction=1 with no BSP, entity     |
-|                                    |                                |               | origin/velocity set+get. All passing.    |
+|                                    |                                |               | origin/velocity set+get. All pass.       |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
-| tests/entities/test_entity.cpp     | Tests: EntityID, EntityHandle, | IN PROGRESS   | EntityID make/index/gen/valid;           |
-|                                    | EntityList, Entity struct      |               | EntityHandle null/valid; EntityList      |
+| tests/physics/test_collide.cpp     | Tests: AABB collision          | DONE          | traceAABB swept vs static AABB. Slab     |
+|                                    |                                |               | method verification. All pass.           |
++------------------------------------+--------------------------------+---------------+------------------------------------------+
+| tests/physics/test_trace_world.cpp | Tests: AABB vs BSP + dynamics  | DONE          | BSP brush trace + dynamic collider       |
+|                                    |                                |               | sweep. All pass.                         |
++------------------------------------+--------------------------------+---------------+------------------------------------------+
+| tests/entities/test_entity.cpp     | Tests: EntityID, Handle, List, | DONE          | EntityID make/index/gen/valid;           |
+|                                    | struct                         |               | EntityHandle null/valid; EntityList      |
 |                                    |                                |               | create/destroy/count/get/classname;      |
 |                                    |                                |               | Entity state/origin/velocity/flags. All  |
-|                                    |                                |               | passing.                                 |
-+------------------------------------+--------------------------------+---------------+------------------------------------------+
-| tests/physics/test_trace.cpp       | Tests: BSP trace, AABB sweep   | TODO          | Trace against known geometry; verify     |
-|                                    |                                |               | fraction, normal, hit entity             |
+|                                    |                                |               | pass.                                    |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
 | tests/network/test_delta.cpp       | Tests: Delta                   | TODO          | Encode two snapshots; decode; verify     |
-|                                    | compress/decompress            |               | byte-for-byte equality                   |
+|                                    | compress/decompress            |               | byte-for-byte equality. Not started.     |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
 | tests/entities/test_elist.cpp      | Tests: EntityList stress       | TODO          | Create 1000 entities; destroy random     |
-|                                    |                                |               | subset; verify handles and count         |
+|                                    |                                |               | subset; verify handles and count. Not    |
+|                                    |                                |               | started.                                 |
 +------------------------------------+--------------------------------+---------------+------------------------------------------+
 
 ────────────────────────────────────────────────────────────────────────
@@ -769,16 +865,21 @@
   >> Phase 2 In Progress
   ------------------------
 
-  Step 1 (DONE): EntityID / EntityHandle / EntityList / Entity struct / IPhysicsWorld / AABBPhysics foundation
-  Step 2 (NEXT): Implement EntityFactory — classname registry loaded from game DLL
-  Step 3: Implement MapLoader — parse BSP entity lump, call EntityFactory to spawn all entities
-  Step 4: Implement full PM_StepSlideMove (step-up, water movement) in AABBPhysics
-  Step 5: Define IGameModule; build GameDLL loader (dlopen/LoadLibrary + hot-reload)
-  Step 6: Implement Server + Client + DeltaCompressor + PacketBuffer
-  Step 7: Implement OpenALAudio behind IAudioSystem
-  Step 8: Implement cvar system + Console
-  Step 9: Implement MD2 model renderer
-  Step 10: Implement HUD / 2D renderer — Phase 2 complete
+  Step 1 (DONE): Foundation — EntityID/Handle, EntityList, Entity struct, IPhysicsWorld/AABBPhysics
+  Step 2 (DONE): EntityClass system — virtual onSpawn/onThink/onTouch/onUse/onDie hooks + registry
+  Step 3 (DONE): EngineAPI cross-DLL function table — game DLL talks to engine through it
+  Step 4 (DONE): IGameModule + GameDLL loader — engine loads game DLL, calls init/think/loadMap
+  Step 5 (DONE): EntityFactory + MapLoader — spawn entities from BSP lump, property store
+  Step 6 (DONE): CVar system + Console — tilde console, live cvar get/set
+  Step 7 (DONE): PlayerController — WASD + jump + sprint + mouse look, ground detection
+  Step 8 (DONE): FuncPlat moving platform — AABB carry detection works with engine after-think
+  Step 9 (DONE): MD2 + OBJ model renderer — vertex-animated + static mesh loading
+  Step 10 (NEXT): Water movement — swim physics, buoyancy, surface detection
+  Step 11: Sprite renderer — billboard sprites for particles, pickups, explosions
+  Step 12: HUD / 2D renderer — health bar, ammo counter, crosshair overlay
+  Step 13: Server + Client + DeltaCompressor + PacketBuffer — networking
+  Step 14: OpenALAudio — 3D positional sound, WAV/OGG playback
+  Step 15: Particle system — CPU-simulated particles for effects
 
   >> Starting Phase 3
   ---------------------
@@ -824,6 +925,22 @@
 |       |              |                    | tests/physics/test_ground.cpp both pass. Phase 2 summary |
 |       |              |                    | updated to IN PROGRESS. Quick reference updated with     |
 |       |              |                    | current Phase 2 step order.                              |
++-------+--------------+--------------------+----------------------------------------------------------+
+| 1.3   | 2026-05-09   | Ahmed (solo dev)   | Phase 2 comprehensive status update. EntityFactory,      |
+|       |              |                    | MapLoader, IGameModule, GameDLL loader, ConsoleVar,      |
+|       |              |                    | Console, MD2/OBJ Model Renderer, EngineAPI, EntityClass  |
+|       |              |                    | system, PlayerController, FuncPlat, PropertyStore,       |
+|       |              |                    | DynamicCollider, Text2D all marked DONE — was previously |
+|       |              |                    | TODO. Engine Main Loop notes updated (after-think carry  |
+|       |              |                    | propagation, frame ordering fix). PlayerController added |
+|       |              |                    | as new system. FuncPlat carry system with AABB detection |
+|       |              |                    | + velocity inheritance documented. Tests table updated:  |
+|       |              |                    | all 7 existing tests marked DONE (were TODO).            |
+|       |              |                    | Dependencies updated: SDL3, OpenGL 4.5, GLAD, stb_image  |
+|       |              |                    | marked DONE. Quick reference Phase 2 steps rewritten to  |
+|       |              |                    | match actual completion state (steps 1-9 DONE, steps     |
+|       |              |                    | 10-15 TODO). Phase 2 acceptance criteria updated with    |
+|       |              |                    | partial checkmarks for working systems.                  |
 +-------+--------------+--------------------+----------------------------------------------------------+
 
 ========================================================================

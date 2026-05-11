@@ -26,6 +26,15 @@
 namespace nova
 {
 
+    // Dynamic AABB collider for moving brush entities (func_plat, func_door).
+    // All fields are in the physics coordinate space (GL: Z-up).
+    struct DynamicCollider
+    {
+        Vec3 origin;   // world position
+        Vec3 mins;     // local half-extents (negative)
+        Vec3 maxs;     // local half-extents (positive)
+    };
+
     class AABBPhysics : public IPhysicsWorld
     {
     public:
@@ -69,9 +78,17 @@ namespace nova
         // a brush before sweeping downward.
         bool testSolid(const Vec3 &origin, const Vec3 &mins, const Vec3 &maxs) const;
 
+        // Dynamic colliders — moving brush entities whose AABBs change each frame.
+        void setDynamicColliders(const DynamicCollider *colliders, size_t count);
+
     private:
         TraceResult traceWorld(const Vec3 &start, const Vec3 &dir, float dist,
                                const Vec3 &mins, const Vec3 &maxs);
+
+        // Swept AABB vs a single static AABB. Returns fraction, normal, endPos.
+        TraceResult traceAABB(const Vec3 &start, const Vec3 &dir, float dist,
+                              const Vec3 &mins, const Vec3 &maxs,
+                              const Vec3 &boxOrigin, const Vec3 &boxMins, const Vec3 &boxMaxs);
 
         IBSPCollisionWorld *m_bsp = nullptr;
         Vec3 *m_entOrigin = nullptr;
@@ -81,6 +98,9 @@ namespace nova
 
         Vec3 m_playerMins = {-16.f, -36.f, -16.f};
         Vec3 m_playerMaxs = {16.f, 36.f, 16.f};
+
+        const DynamicCollider *m_dynamicColliders = nullptr;
+        size_t m_dynamicColliderCount = 0;
     };
 
 } // namespace nova

@@ -15,7 +15,7 @@ WARNING: test.map[line 485]: Unrecognised string escape - \s
 WARNING: test.map[line 485]: Unrecognised string escape - \m
       9 entities
       9 unique textures
-    159 texinfos
+    158 texinfos
     116 unique planes
 
 INFO: world extents calculated to 1944 units
@@ -64,7 +64,7 @@ chopped 49 brushes into 49
     758 tree portals
     386 sides visible
     193 makefaces
-     58 merged
+     59 merged
      66 subdivided
     95 nodes pruned
     31 player-occupiable leaves
@@ -75,31 +75,31 @@ chopped 49 brushes into 49
     62 leafs total
     12 max tree height
      9 avg tree height
-    200 edges added by tjunctions
-    201 faces optimized through MWT
-    602 triangles computed from MWT
-     54 faces created via optimization of MWT triangles
-    556 edges
-    255 faces
+    198 edges added by tjunctions
+    200 faces optimized through MWT
+    598 triangles computed from MWT
+     52 faces created via optimization of MWT triangles
+    551 edges
+    252 faces
      49 total brushes
     294 total brush sides
      55 total leaf brushes
-     91 optimized brush side texinfos
+     92 optimized brush side texinfos
 Writing test.bsp as Quake II BSP IBSP:38
 Wrote test.bsp
 
 count   lump name    byte size 
       2 models               96
      99 planes             1980
-    309 vertexes           3708
+    307 vertexes           3684
      67 nodes              1876
-    105 texinfos           7980
-    261 faces              5220
+    103 texinfos           7828
+    258 faces              5160
      70 leafs              1960
-    339 leaffaces           678
+    335 leaffaces           670
      56 leafbrushes         112
-    569 edges              2276
-   1136 surfedges          4544
+    564 edges              2256
+   1126 surfedges          4504
      50 brushes             600
     300 brushsides         1200
       2 areas                16
@@ -108,6 +108,6 @@ count   lump name    byte size
         visdata               0
         entdata             560
 
-0.079s seconds elapsed
+0.054s seconds elapsed
 
 

@@ -366,6 +366,8 @@ namespace nova
         int surfEdgeCount() const { return (int)m_surfEdges.size(); }
         const BSPEdge* edges() const { return m_edges.data(); }
         int edgeCount() const { return (int)m_edges.size(); }
+        const BSPModel* models() const { return m_models.data(); }
+        int modelCount() const { return (int)m_models.size(); }
 
     private:
         bool loadLumps(const uint8_t *data, size_t size);
@@ -454,7 +456,6 @@ namespace nova
             std::vector<DrawBatch> batches;
         };
         std::vector<RenderChunk> m_chunks;
-        ShaderHandle m_shader = INVALID_SHADER;
         Mat4 m_viewProj = Mat4::identity();
         bool m_hasViewProj = false;
         // Cached frustum planes for model culling (populated from viewProj)
@@ -476,6 +477,40 @@ namespace nova
 
         Vec3 m_spawnOrigin = {0, 0, 0};
         Vec3 m_spawnAngles = {0, 0, 0};
+
+        // ---- BModel rendering (brush entities like func_plat, func_door) ----
+        // Each bmodel (m_models[1..N]) gets its own vertex/index buffers so it
+        // can be rendered at an entity-controlled origin offset.
+        struct BModelGPU
+        {
+            BufferHandle vertexBuffer = INVALID_BUFFER;
+            BufferHandle indexBuffer  = INVALID_BUFFER;
+            int indexCount = 0;
+            Vec3 boundsMin = Vec3::zero();
+            Vec3 boundsMax = Vec3::zero();
+            struct BModelBatch
+            {
+                TextureHandle tex = INVALID_TEXTURE;
+                SamplerHandle samp = INVALID_SAMPLER;
+                int firstIndex = 0;
+                int indexCount = 0;
+            };
+            std::vector<BModelBatch> batches;
+        };
+        std::vector<BModelGPU> m_bmodelGPU; // indexed by model index (0 = world, 1..N = bmodels)
+
+        // Build bmodel GPU data after static world is uploaded.
+        void buildBModelGeometry();
+
+    public:
+        void uploadBModelsToGPU(IRenderBackend *backend);
+        void releaseBModelGPU(IRenderBackend *backend);
+
+        // Render a specific bmodel at the given world-space origin.
+        void renderBModel(IRenderBackend *backend, ShaderHandle shader, int modelIndex, const Vec3& origin);
+
+        // Check if a face index belongs to a bmodel (returns bmodel index, -1 if static)
+        int getBModelForFace(int faceIndex) const;
     };
 
 } // namespace nova

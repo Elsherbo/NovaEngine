@@ -85,8 +85,9 @@ private:
 };
 
 // -----------------------------------------------------------------------
-// Global property store instance
+// Global property store instance — declared extern, defined in .cpp
+// to avoid cross-TU duplication (static lib globals copied per binary).
 // -----------------------------------------------------------------------
-inline PropertyStore g_propertyStore;
+extern PropertyStore g_propertyStore;
 
 } // namespace nova

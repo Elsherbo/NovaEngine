@@ -53,14 +53,6 @@ add_executable(nova_app
     engine/core/engine.cpp
 )
 
-# Add glad.c as C code and disable pedantic warnings for it
-target_sources(nova_app PRIVATE
-    vendor/GLAD/src/glad.c
-)
-set_source_files_properties(vendor/GLAD/src/glad.c PROPERTIES 
-    LANGUAGE C
-    COMPILE_FLAGS "-Wno-pedantic"
-)
 target_link_libraries(nova_app PRIVATE
     nova_engine
     nova_game

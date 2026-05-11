@@ -307,11 +307,25 @@ int MapLoader::load(IWorld* world)
             g_propertyStore.set(entIdx, k, pe.pairs[i].val);
         }
 
-        // Call EntityClass::onSpawn() now that all properties are set
-        g_entityList.finalize(ent->handle);
+        // ---- Override origin/mins/maxs for brush entities (BSP submodels) ----
+        // Brush entities have model="*N" but no explicit "origin" key in the
+        // entity lump (origin defaults to 0,0,0). The submodel's baked world
+        // position and bounds are in BSP model data. Read them so the entity
+        // renders, collides, and carries from the correct world position.
+        const char* modelStr = pe.get("model");
+        if (modelStr && modelStr[0] == '*')
+        {
+            int modelIdx = std::atoi(modelStr + 1);
+            if (modelIdx > 0)
+            {
+                Vec3 bmodelOrigin = world->getBModelOrigin(modelIdx);
+                ent->origin = bmodelOrigin;
+                world->getBModelBounds(modelIdx, ent->mins, ent->maxs);
+            }
+        }
 
-        fprintf(stdout, "MapLoader: spawned '%s' at (%.0f, %.0f, %.0f)\n",
-                classname, origin.x, origin.y, origin.z);
+        // Call EntityClass::onSpawn()
+        g_entityList.finalize(ent->handle);
         ++spawned;
     }
 

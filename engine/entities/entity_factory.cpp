@@ -76,6 +76,10 @@ Entity* EntityFactory::spawn(const char* classname, Vec3 origin)
     SpawnFn fn = lookup(classname);
     if (fn) fn(ent);
 
+    // NOTE: Caller must call g_entityList.finalize(handle) after setting
+    // all properties. MapLoader::load() does this. Direct callers from
+    // game code should also call finalize() explicitly.
+
     return ent;
 }
 

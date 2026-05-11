@@ -19,7 +19,7 @@ const META = {
     title:     "NOVA ENGINE",
     subtitle:  "Game Engine Development Master Plan",
     tagline:   "Quake 2 Foundation  →  Source Engine Capabilities",
-    revision:  "1.2",
+    revision:  "1.3",
     codename:  "NOVA",
     startDate: "TBD",
 };
@@ -105,7 +105,7 @@ const PHASES = [
             { name: "Lightmap System",       file: "renderer/bsp/bsp_loader.cpp",         status: "✅ DONE",        notes: "Single 4096×4096 RGB8 atlas shelf-packed from face extents. Per-face atlasX/Y/hasAtlas set at upload time. Lightmap UVs clamped to face region to prevent bilinear bleeding. Overbright ×2 decode in shader. Atlas mips capped at 4 levels." },
             { name: "BSP PVS Culling",       file: "renderer/bsp/bsp_loader.cpp",         status: "✅ DONE",        notes: "BSPMap::findLeaf() walks node tree in GL space. decompressPVS() RLE-decodes Q2 vis lump per cluster. Per-frame cluster cache skips re-decompress when camera stays in same cluster. DrawBatch carries clusterIndex; PVS gate in render() per batch. F3 key prints camLeaf/cluster to stdout." },
             { name: "Camera",                file: "core/camera.h / camera.cpp",          status: "✅ DONE",        notes: "Quaternion yaw/pitch; WASD movement (horizontal-plane locked); mouse look; getPosition() used for PVS leaf walk each frame" },
-            { name: "Engine Main Loop",      file: "core/engine.cpp",                     status: "✅ DONE",        notes: "Fixed-timestep loop; FPS counter in title; BSP load + physics spawn; UBO update per frame; F1 mouse grab toggle; F2 debug-view cycle (lit/lm-gray/lm-boost/lm-uv); F3 PVS stats. EntityList + m_playerEntity wired; think(dt) called per frame; player origin synced from camera." },
+            { name: "Engine Main Loop",      file: "core/engine.cpp",                     status: "✅ DONE",        notes: "Fixed-timestep loop; FPS counter in title. Per-frame: mouse look, entity think (func_plat moves + carryEntities), dynamic collider rebuild, PlayerController physics + moveSlide, after-think carry propagation (velocity + grounded), player entity origin sync from camera. F1 grab toggle, F2 debug-view cycle, F3 PVS stats. Game DLL think at frame end." },
         ],
 
         interfaces: [
@@ -136,30 +136,50 @@ const PHASES = [
         goal: "Phase 2 transforms the renderer demo into a playable game prototype. By the end of Phase 2, a simple arena FPS can run: a player moves through a level, shoots projectiles, and the game logic lives in a separate DLL. Networking supports a basic client-server game.",
 
         systems: [
-            { name: "IGameModule interface",  file: "engine/entities/igame_module.h",       status: "⬜ TODO",        notes: "Engine<->game contract: init, shutdown, think, onEntitySpawn, onCollision. Stub header exists; no implementation yet." },
-            { name: "GameDLL loader",         file: "engine/entities/game_dll_loader.h/.cpp", status: "⬜ TODO",      notes: "dlopen/LoadLibrary; hot-reload on file change for fast iteration. Stub exists." },
-            { name: "EntityID / EntityHandle",file: "engine/entities/entity_id.h",          status: "✅ DONE",        notes: "Generational index: 16-bit generation + 15-bit index packed into 32 bits. make(), index(), generation(), isValid(), isInvalid(). EntityRef for safe frame-scoped access. All tests pass." },
-            { name: "EntityList",             file: "engine/entities/entity_list.h/.cpp",   status: "🔄 IN PROGRESS", notes: "Flat static arrays, kMaxEntities=1024, zero heap allocation. O(1) create/destroy via free-list stack. create() sets STATE_ALIVE; destroy() sets STATE_FREE. iterateActive, iterateByClassname, findByClassname, findInAABB, think(dt). tests/entities/test_entity.cpp and tests/physics/test_ground.cpp pass. EntityFactory + MapLoader integration still TODO." },
-            { name: "Entity (base struct)",   file: "engine/entities/entity.h",             status: "🔄 IN PROGRESS", notes: "Full struct: origin, velocity, mins/maxs, angles, classname[32], EntityState (FREE/ALIVE/DEAD), think/touch/use/pain/die raw fn ptrs, nextThink, health, flags, handles. STATE_ALIVE set on create(); STATE_FREE set on destroy(). Test passing." },
-            { name: "EntityFactory",          file: "entities/entity_factory.cpp",           status: "⬜ TODO",        notes: "Registry of classname -> spawn function; loaded from game DLL. Not yet started." },
-            { name: "IPhysicsWorld interface",file: "engine/physics/iphysics_world.h",       status: "✅ DONE",        notes: "Pure virtual: setWorld, step, setOrigin/Velocity, getOrigin/Velocity, trace, traceEntity, moveSlide, isOnGround, getGroundEntity, getGroundElevation, setGravity/getGravity. TraceResult struct with fraction, endPos, normal, startSolid." },
-            { name: "AABBPhysics",            file: "engine/physics/aabb_physics.h/.cpp",   status: "🔄 IN PROGRESS", notes: "setEntityStorage(Vec3* origin, Vec3* velocity, count) wires raw storage for physics. setPlayerBounds, testSolid (spawn escape), isOnGround, getGroundElevation, setGravity. Swept AABB vs BSP. moveSlide with 2-plane crease fix. test_ground.cpp passes. Full PM_StepSlideMove and water movement still TODO." },
-            { name: "BSP Collision",          file: "physics/aabb/bsp_trace.cpp",           status: "⬜ TODO",        notes: "CM_BoxTrace against BSP planes; returns trace_t (fraction, normal, ent). Exists inside AABBPhysics but not broken out as standalone module yet." },
-            { name: "PlayerMove",             file: "physics/aabb/player_move.cpp",          status: "⬜ TODO",        notes: "Full ground/air/water movement; wish velocity; friction; gravity; step-up. Currently handled partially inside AABBPhysics::moveSlide." },
-            { name: "INetworkSystem interface",file: "network/inetwork.h",                  status: "⬜ TODO",        notes: "connect, disconnect, sendPacket, receivePackets — pure virtual" },
-            { name: "Server",                 file: "network/server.cpp",                   status: "⬜ TODO",        notes: "Authoritative sim; builds delta snapshots; broadcasts to clients" },
-            { name: "Client",                 file: "network/client.cpp",                   status: "⬜ TODO",        notes: "Sends input; receives snapshots; client-side prediction + interpolation" },
-            { name: "DeltaCompressor",        file: "network/delta.cpp",                    status: "⬜ TODO",        notes: "Diff two entity snapshots; encode changed fields only (bit flags)" },
-            { name: "PacketBuffer",           file: "network/packet.cpp",                   status: "⬜ TODO",        notes: "Reliable + unreliable channels; sequence numbers; ack tracking" },
-            { name: "IAudioSystem interface", file: "audio/iaudio.h",                       status: "⬜ TODO",        notes: "loadSound, playSound, play3D, stopAll — pure virtual" },
-            { name: "OpenALAudio",            file: "audio/openal/openal_audio.cpp",        status: "⬜ TODO",        notes: "3D positional audio; WAV/OGG playback; distance attenuation" },
-            { name: "ConsoleVar (cvar)",      file: "engine/cvar.cpp",                      status: "⬜ TODO",        notes: "Runtime variables (sv_gravity, cl_fov etc.); serialized to config.cfg" },
-            { name: "Console",               file: "engine/console.cpp",                   status: "⬜ TODO",        notes: "In-game drop-down console; command parsing; cvar get/set" },
-            { name: "MapLoader (.bsp spawn)", file: "entities/map_loader.cpp",              status: "⬜ TODO",        notes: "Parse entity lump from .bsp; call EntityFactory to spawn all entities" },
-            { name: "Model Renderer (MD2)",   file: "renderer/models/md2.cpp",              status: "⬜ TODO",        notes: "Load Quake 2 .md2 vertex-animated models; lerp between frames" },
-            { name: "Sprite Renderer",        file: "renderer/sprite.cpp",                  status: "⬜ TODO",        notes: "Billboard sprites for particles, explosions, pickups" },
-            { name: "Particle System (basic)",file: "renderer/particles/particles.cpp",     status: "⬜ TODO",        notes: "CPU-simulated particles: spawn, update, fade, billboard render" },
-            { name: "HUD / 2D Renderer",      file: "renderer/hud/hud.cpp",                 status: "⬜ TODO",        notes: "Orthographic quads for health bar, ammo counter, crosshair" },
+            // ── Core entity / DLL systems ──
+            { name: "IGameModule interface",  file: "engine/entities/igame_module.h",          status: "✅ DONE",        notes: "Engine<->game contract: init, shutdown, think, loadMap, onEntitySpawn, onEntityTouch, onEntityDestroy. GameModule in game DLL implements it. Engine calls game->init() then game->loadMap() after BSP load, game->think() each frame." },
+            { name: "GameDLL loader",         file: "engine/entities/game_dll_loader.h/.cpp",  status: "✅ DONE",        notes: "LoadLibrary-based. Loads nova_game.dll, resolves GetGameModule() symbol, returns IGameModule*. Hot-reload not yet implemented." },
+            { name: "EngineAPI (cross-DLL)",  file: "engine/core/engine_api.h/.cpp",           status: "✅ DONE",        notes: "C-compatible function table passed to game DLL on init. Exposes setEntityAnim, registerEntityClass, createModelEntity, set/getEntityOrigin, findEntityByClassname, get/setEntityProperty, iterateActiveEntities. Static stubs in engine_api.cpp handle entity pool access; renderer callbacks wired by Engine at startup." },
+            { name: "EntityID / EntityHandle",file: "engine/entities/entity_id.h",             status: "✅ DONE",        notes: "Generational index: 16-bit generation + 15-bit index packed into 32 bits. make(), index(), generation(), isValid(), isInvalid(). EntityRef for safe frame-scoped access. All tests pass." },
+            { name: "EntityList",             file: "engine/entities/entity_list.h/.cpp",      status: "✅ DONE",        notes: "Flat static arrays, kMaxEntities=1024, zero heap allocation. O(1) create/destroy via free-list stack. iterateActive, iterateByClassname, findByClassname, findInAABB, think(dt). Engine EntityList created as global, shared (separately compiled) across engine + game DLL." },
+            { name: "Entity (base struct)",   file: "engine/entities/entity.h",                status: "✅ DONE",        notes: "480 bytes on MSVC x64 (static_assert). origin/velocity/mins/maxs/angles, classname[32], model[32], EntityState lifecycle, EntityClass* ptr for virtual dispatch, carriedThisFrame flag, plat state fields (platStartPos/TargetPos, height/speed/wait/timer/state), animRequest[32], target/targetname, aiThinkTimer, think/touch/use/pain/die fn ptrs, property store integration." },
+            { name: "EntityFactory",          file: "engine/entities/entity_factory.cpp",      status: "✅ DONE",        notes: "Classname→spawn function registry. init() registers built-in classes (light, info_player_start, etc.), parseOrigin, parseAngles, parseInt, parseFloat helpers. Engine calls EntityFactory::init() before BSP load." },
+            { name: "MapLoader (.bsp spawn)", file: "engine/entities/map_loader.cpp",          status: "✅ DONE",        notes: "Parses entity lump from .bsp; calls EntityFactory::spawn() for each entity. Extracts origin, angles, spawnflags, health, target/targetname, property store keys. For brush entities (model=*N): reads bmodel origin + mins/maxs from BSP submodel data. Calls finalize() to trigger EntityClass::onSpawn()." },
+            { name: "PropertyStore",          file: "engine/entities/property_store.h",        status: "✅ DONE",        notes: "Cross-DLL safe key-value store indexed by entity handle. get/set/has methods. Populated by MapLoader from BSP entity lump; read by game DLL through EngineAPI." },
+            { name: "EntityClass system",     file: "engine/entities/entity_class.h/.cpp",     status: "✅ DONE",        notes: "EntityClass base with virtual onSpawn/onThink/onPain/onDie/onTouch/onUse hooks. EntityClassRegistry maps classname→EntityClass*. Engine-side global g_entityClasses. Game DLL registers classes through EngineAPI::registerEntityClass." },
+            { name: "PlayerEntityClass",      file: "game/src/game_entity_classes.h/.cpp",     status: "✅ DONE",        notes: "Minimal no-op EntityClass registered by game DLL so player entity has valid entityClass pointer. Player logic driven by engine-side PlayerController, not onThink." },
+
+            // ── Physics ──
+            { name: "IPhysicsWorld interface",file: "engine/physics/iphysics_world.h",         status: "✅ DONE",        notes: "Pure virtual: setWorld, step, setOrigin/Velocity, getOrigin/Velocity, trace, traceEntity, moveSlide, isOnGround, getGroundEntity, getGroundElevation, setGravity/getGravity. TraceResult struct with fraction, endPos, normal, startSolid." },
+            { name: "AABBPhysics",            file: "engine/physics/aabb_physics.h/.cpp",      status: "✅ DONE",        notes: "setEntityStorage(Vec3* origin, Vec3* velocity, count) wires raw arrays for physics. setPlayerBounds, testSolid (spawn escape), isOnGround, getGroundElevation, setGravity. Swept AABB vs BSP + dynamic colliders. moveSlide with 2-plane crease fix, step-up with ceiling check, startSolid guard. All tests pass. Full water movement still TODO." },
+            { name: "DynamicCollider",        file: "engine/physics/aabb_physics.h",           status: "✅ DONE",        notes: "AABB collider struct for moving brush entities. setDynamicColliders() on AABBPhysics. Rebuilt each frame from entity positions after think(). Platform collision works through this system." },
+
+            // ── Player movement ──
+            { name: "PlayerController",       file: "engine/player/player_controller.h/.cpp",  status: "✅ DONE",        notes: "First-person movement controller. Wish direction from WASD, jump with space, sprint with shift. CVar-driven feel: pc_jumpspeed/movespeed/groundaccel/airaccel/friction/stopspeed/maxspeed/sprintmult. Ground detection, gravity, friction, acceleration. Velocity/position synced with AABBPhysics backing store each frame. Camera at getEyePosition() = m_position + kPC_EyeHeight." },
+
+            // ── Game entities ──
+            { name: "FuncPlat (moving plat)", file: "game/src/game_entity_classes.h",          status: "✅ DONE",        notes: "Cyclic vertical moving platform via EntityClass::onThink. Reads height/speed/wait from TrenchBroom properties through EngineAPI. carryEntities() lifts players standing on platform: Q2 AABB overlap test with tolerance [-4, +2], delta applied to entity origin, velocity inherited. Engine after-think propagates carry to physics backing store." },
+
+            // ── Developer tools ──
+            { name: "ConsoleVar (cvar)",      file: "engine/core/cvar.cpp",                    status: "✅ DONE",        notes: "CVarSystem singleton. reg(name, default, desc) creates CVar. find() lookup by name. get/set via CVar*. CVar::value is a plain float member, zero-overhead read. Inline registration for PlayerController feel cvars. Engine cvars: r_debugview, sv_cheats." },
+            { name: "Console",               file: "engine/core/console.cpp",                  status: "✅ DONE",        notes: "In-game drop-down console toggled with tilde (~). Line input, command parsing, cvar get/set. addLogLine() for engine log hook. Mouse grab toggle via callback. Q2-style conchars font or built-in IBM CP437 8x8 fallback." },
+            { name: "Text2D / Console font",  file: "engine/core/text_2d.h/.cpp",              status: "✅ DONE",        notes: "Bitmap font rendering for console and HUD. Supports Q2 conchars (normal + alternate set) and generic bitmap fonts. Built-in IBM CP437 8x8 fallback if no font file found." },
+
+            // ── Models ──
+            { name: "Model Renderer (MD2)",   file: "engine/renderer/models/md2_loader.cpp",   status: "✅ DONE",        notes: "Load Quake 2 .md2 vertex-animated models; lerp between frames. ModelRenderer class with loadMD2Model, registerEntity, setEntityAnim, setEntityAnimRange. OBJ static mesh loader also implemented." },
+
+            // ── Still TODO ──
+            { name: "Sprite Renderer",        file: "renderer/sprite.cpp",                     status: "⬜ TODO",        notes: "Billboard sprites for particles, explosions, pickups" },
+            { name: "Particle System (basic)",file: "renderer/particles/particles.cpp",        status: "⬜ TODO",        notes: "CPU-simulated particles: spawn, update, fade, billboard render" },
+            { name: "HUD / 2D Renderer",      file: "renderer/hud/hud.cpp",                    status: "⬜ TODO",        notes: "Orthographic quads for health bar, ammo counter, crosshair" },
+            { name: "Water movement",         file: "engine/physics/aabb_physics.cpp",         status: "⬜ TODO",        notes: "Swim physics: buoyancy, water drag, surface detection. Not yet implemented — player falls through water brushes." },
+            { name: "INetworkSystem interface",file: "network/inetwork.h",                     status: "⬜ TODO",        notes: "connect, disconnect, sendPacket, receivePackets — pure virtual" },
+            { name: "Server",                 file: "network/server.cpp",                      status: "⬜ TODO",        notes: "Authoritative sim; builds delta snapshots; broadcasts to clients" },
+            { name: "Client",                 file: "network/client.cpp",                      status: "⬜ TODO",        notes: "Sends input; receives snapshots; client-side prediction + interpolation" },
+            { name: "DeltaCompressor",        file: "network/delta.cpp",                       status: "⬜ TODO",        notes: "Diff two entity snapshots; encode changed fields only (bit flags)" },
+            { name: "PacketBuffer",           file: "network/packet.cpp",                      status: "⬜ TODO",        notes: "Reliable + unreliable channels; sequence numbers; ack tracking" },
+            { name: "IAudioSystem interface", file: "audio/iaudio.h",                          status: "⬜ TODO",        notes: "loadSound, playSound, play3D, stopAll — pure virtual" },
+            { name: "OpenALAudio",            file: "audio/openal/openal_audio.cpp",           status: "⬜ TODO",        notes: "3D positional audio; WAV/OGG playback; distance attenuation" },
         ],
 
         // Optional: code blocks shown as-is (array of lines)
@@ -191,12 +211,16 @@ const PHASES = [
         ],
 
         criteria: [
-            "Player can load a map, spawn, move (walk/jump/swim), and shoot a projectile",
-            "Game logic (damage, pickups, doors) lives entirely in game.dll with zero engine changes",
-            "Two clients can connect to a local server and see each other moving",
-            "Console opens with tilde (~), cvars are readable and settable",
-            "Audio plays 3D sounds attached to entities",
-            "All Phase 2 systems show DONE in the table above",
+            "✅ Player loads a map, spawns on info_player_start, walks and jumps (WASD + space)",
+            "✅ Game DLL separation works — engine + game are separate binaries linked through IGameModule + EngineAPI",
+            "✅ FuncPlat entities carry the player (moving platform with AABB carry detection + velocity inheritance)",
+            "✅ Console opens with tilde (~), cvars are readable and settable",
+            "✅ EntityClass system lets game DLL define entity behavior (FuncPlat, MonsterClass, PlayerEntityClass) without engine changes",
+            "⬜ Swimming not yet implemented — player falls through water brushes",
+            "⬜ Shooting / projectiles not yet implemented",
+            "⬜ Networking not yet implemented (Server + Client + DeltaCompressor + PacketBuffer)",
+            "⬜ Audio not yet implemented (IAudioSystem + OpenALAudio)",
+            "⬜ Sprite / Particle / HUD rendering not yet implemented",
         ],
     },
 
@@ -354,29 +378,30 @@ const BUILD = {
         "tests/CMakeLists.txt        # Builds all test executables via CTest",
     ],
     dependencies: [
-        { name: "SDL2",        file: "platform/sdl2/",       status: "⬜ TODO", notes: "v2.28+; window, input, OpenGL context, file I/O wrappers" },
-        { name: "OpenGL 4.5",  file: "renderer/gl/",         status: "⬜ TODO", notes: "Via GLAD loader; 4.5 core profile; DSA (direct state access) for clarity" },
-        { name: "GLAD",        file: "vendor/glad/",         status: "⬜ TODO", notes: "OpenGL function loader; generate for GL 4.5 + extensions needed" },
-        { name: "GLM",         file: "vendor/glm/",          status: "⬜ TODO", notes: "Header-only math; used only in tool scripts — engine uses its own math" },
-        { name: "OpenAL Soft", file: "audio/openal/",        status: "⬜ TODO", notes: "v1.23+; EFX extension for reverb; cross-platform" },
-        { name: "stb_image",   file: "vendor/stb/",          status: "⬜ TODO", notes: "Single-header image loader for PNG/JPG/TGA texture loading" },
-        { name: "Jolt Physics",file: "physics/jolt/",        status: "⬜ TODO", notes: "Phase 3+; MIT license; excellent performance; replace AABBPhysics" },
-        { name: "Lua 5.4",     file: "scripting/lua/",       status: "⬜ TODO", notes: "Phase 3+; embed as static lib; bind via sol2 or manual stack API" },
-        { name: "Vulkan SDK",  file: "renderer/vulkan/",     status: "⬜ TODO", notes: "Phase 4+; VMA for memory allocation; vkbootstrap for init" },
-        { name: "Catch2",      file: "vendor/catch2/",       status: "⬜ TODO", notes: "Unit test framework; one test executable per module" },
+        { name: "SDL3",        file: "vendor/SDL3/",         status: "✅ DONE", notes: "v3.2+; window, input, OpenGL context. Relative mouse mode for FPS look." },
+        { name: "OpenGL 4.5",  file: "renderer/gl/",         status: "✅ DONE", notes: "Via GLAD loader; 4.5 core profile; DSA (direct state access) for clarity" },
+        { name: "GLAD",        file: "vendor/GLAD/",         status: "✅ DONE", notes: "OpenGL function loader; GL 4.5 core profile" },
+        { name: "stb_image",   file: "vendor/stb/",          status: "✅ DONE", notes: "Single-header image loader for PNG/JPG/TGA/WAL texture loading" },
+        { name: "GLM",         file: "vendor/glm/",          status: "⬜ TODO", notes: "Header-only math; planned for tool scripts — engine uses its own math" },
+        { name: "OpenAL Soft", file: "audio/openal/",        status: "⬜ TODO", notes: "Phase 2+; EFX extension for reverb; cross-platform. Not started." },
+        { name: "Jolt Physics",file: "physics/jolt/",        status: "⬜ TODO", notes: "Phase 3+; MIT license; replace AABBPhysics" },
+        { name: "Lua 5.4",     file: "scripting/lua/",       status: "⬜ TODO", notes: "Phase 3+; embed as static lib" },
+        { name: "Vulkan SDK",  file: "renderer/vulkan/",     status: "⬜ TODO", notes: "Phase 4+; VMA + vkbootstrap" },
     ],
 };
 
 // ── Tests ─────────────────────────────────────────────────────
 const TESTS = [
-    { name: "tests/core/test_math.cpp",       file: "Tests: Vec3, Mat4, Quat, AABB",                           status: "⬜ TODO",        notes: "Test dot/cross/normalize, mat4 mul, frustum planes, AABB overlap" },
-    { name: "tests/core/test_memory.cpp",     file: "Tests: Arena, Zone, Pool",                                status: "⬜ TODO",        notes: "Alloc/free/reset; out-of-memory handling; alignment checks" },
-    { name: "tests/renderer/test_bsp.cpp",    file: "Tests: BSP load + PVS",                                   status: "⬜ TODO",        notes: "Load test.bsp; verify leaf count, PVS bits, surface counts" },
-    { name: "tests/physics/test_ground.cpp",  file: "Tests: ground, gravity, trace, entity storage",           status: "🔄 IN PROGRESS", notes: "isOnGround (no BSP), getGroundElevation, gravity default/set, player bounds, trace fraction=1 with no BSP, entity origin/velocity set+get. All passing." },
-    { name: "tests/entities/test_entity.cpp", file: "Tests: EntityID, EntityHandle, EntityList, Entity struct",status: "🔄 IN PROGRESS", notes: "EntityID make/index/gen/valid; EntityHandle null/valid; EntityList create/destroy/count/get/classname; Entity state/origin/velocity/flags. All passing." },
-    { name: "tests/physics/test_trace.cpp",   file: "Tests: BSP trace, AABB sweep",                            status: "⬜ TODO",        notes: "Trace against known geometry; verify fraction, normal, hit entity" },
-    { name: "tests/network/test_delta.cpp",   file: "Tests: Delta compress/decompress",                        status: "⬜ TODO",        notes: "Encode two snapshots; decode; verify byte-for-byte equality" },
-    { name: "tests/entities/test_elist.cpp",  file: "Tests: EntityList stress",                                status: "⬜ TODO",        notes: "Create 1000 entities; destroy random subset; verify handles and count" },
+    { name: "tests/core/test_math.cpp",       file: "Tests: Vec3, Mat4, Quat",                                 status: "✅ DONE",        notes: "Dot/cross/normalize, mat4 mul, frustum planes. 33 lines, plain assert()." },
+    { name: "tests/core/test_memory.cpp",     file: "Tests: Arena, Zone, Pool",                                status: "✅ DONE",        notes: "Alloc/free/reset; out-of-memory handling; alignment checks. All pass." },
+    { name: "tests/core/test_log.cpp",        file: "Tests: Logger levels + hook",                             status: "✅ DONE",        notes: "DEBUG/INFO/WARN/ERROR levels; log hook callback. All pass." },
+    { name: "tests/renderer/test_bsp.cpp",    file: "Tests: BSP load + PVS",                                   status: "✅ DONE",        notes: "Load test.bsp; verify leaf count, model count, PVS bits. All pass." },
+    { name: "tests/physics/test_ground.cpp",  file: "Tests: ground, gravity, trace, entity storage",           status: "✅ DONE",        notes: "isOnGround (no BSP), getGroundElevation, gravity default/set, player bounds, trace fraction=1 with no BSP, entity origin/velocity set+get. All pass." },
+    { name: "tests/physics/test_collide.cpp", file: "Tests: AABB collision",                                   status: "✅ DONE",        notes: "traceAABB swept vs static AABB. Slab method verification. All pass." },
+    { name: "tests/physics/test_trace_world.cpp",file: "Tests: AABB vs BSP + dynamics",                       status: "✅ DONE",        notes: "BSP brush trace + dynamic collider sweep. All pass." },
+    { name: "tests/entities/test_entity.cpp", file: "Tests: EntityID, Handle, List, struct",                   status: "✅ DONE",        notes: "EntityID make/index/gen/valid; EntityHandle null/valid; EntityList create/destroy/count/get/classname; Entity state/origin/velocity/flags. All pass." },
+    { name: "tests/network/test_delta.cpp",   file: "Tests: Delta compress/decompress",                        status: "⬜ TODO",        notes: "Encode two snapshots; decode; verify byte-for-byte equality. Not started." },
+    { name: "tests/entities/test_elist.cpp",  file: "Tests: EntityList stress",                                status: "⬜ TODO",        notes: "Create 1000 entities; destroy random subset; verify handles and count. Not started." },
 ];
 
 // ── Quick Reference ───────────────────────────────────────────
@@ -395,16 +420,21 @@ const QUICK_REFERENCE = {
         "Step 10: Implement Camera — you now have Phase 1",
     ],
     phase2InProgress: [
-        "Step 1 (DONE): EntityID / EntityHandle / EntityList / Entity struct / IPhysicsWorld / AABBPhysics foundation",
-        "Step 2 (NEXT): Implement EntityFactory — classname registry loaded from game DLL",
-        "Step 3: Implement MapLoader — parse BSP entity lump, call EntityFactory to spawn all entities",
-        "Step 4: Implement full PM_StepSlideMove (step-up, water movement) in AABBPhysics",
-        "Step 5: Define IGameModule; build GameDLL loader (dlopen/LoadLibrary + hot-reload)",
-        "Step 6: Implement Server + Client + DeltaCompressor + PacketBuffer",
-        "Step 7: Implement OpenALAudio behind IAudioSystem",
-        "Step 8: Implement cvar system + Console",
-        "Step 9: Implement MD2 model renderer",
-        "Step 10: Implement HUD / 2D renderer — Phase 2 complete",
+        "Step 1 (DONE): Foundation — EntityID/Handle, EntityList, Entity struct, IPhysicsWorld/AABBPhysics",
+        "Step 2 (DONE): EntityClass system — virtual onSpawn/onThink/onTouch/onUse/onDie hooks + registry",
+        "Step 3 (DONE): EngineAPI cross-DLL function table — game DLL talks to engine through it",
+        "Step 4 (DONE): IGameModule + GameDLL loader — engine loads game DLL, calls init/think/loadMap",
+        "Step 5 (DONE): EntityFactory + MapLoader — spawn entities from BSP lump, property store",
+        "Step 6 (DONE): CVar system + Console — tilde console, live cvar get/set",
+        "Step 7 (DONE): PlayerController — WASD + jump + sprint + mouse look, ground detection",
+        "Step 8 (DONE): FuncPlat moving platform — AABB carry detection works with engine after-think",
+        "Step 9 (DONE): MD2 + OBJ model renderer — vertex-animated + static mesh loading",
+        "Step 10 (NEXT): Water movement — swim physics, buoyancy, surface detection",
+        "Step 11: Sprite renderer — billboard sprites for particles, pickups, explosions",
+        "Step 12: HUD / 2D renderer — health bar, ammo counter, crosshair overlay",
+        "Step 13: Server + Client + DeltaCompressor + PacketBuffer — networking",
+        "Step 14: OpenALAudio — 3D positional sound, WAV/OGG playback",
+        "Step 15: Particle system — CPU-simulated particles for effects",
     ],
     startingPhase3: [
         "Step 1: Upgrade surface shader with normal map + specular support",
@@ -437,6 +467,12 @@ const CHANGELOG = [
         date:   "2026-04-27",
         author: "Ahmed (solo dev)",
         changes: "Phase 2 IN PROGRESS. Entity system foundation complete: EntityID/EntityHandle DONE; EntityList flat arrays kMaxEntities=1024 no heap allocation IN PROGRESS; Entity struct STATE_ALIVE/FREE lifecycle IN PROGRESS; IPhysicsWorld interface DONE; AABBPhysics setEntityStorage/testSolid/isOnGround/moveSlide IN PROGRESS. Engine wired: m_entityList + m_playerEntity added to Engine class, think(dt) called each frame, player origin synced from camera each tick, sizeof(Entity) printed on startup. tests/entities/test_entity.cpp and tests/physics/test_ground.cpp both pass. Phase 2 summary updated to IN PROGRESS. Quick reference updated with current Phase 2 step order.",
+    },
+    {
+        rev:    "1.3",
+        date:   "2026-05-09",
+        author: "Ahmed (solo dev)",
+        changes: "Phase 2 comprehensive status update. EntityFactory, MapLoader, IGameModule, GameDLL loader, ConsoleVar, Console, MD2/OBJ Model Renderer, EngineAPI, EntityClass system, PlayerController, FuncPlat, PropertyStore, DynamicCollider, Text2D all marked DONE — was previously TODO. Engine Main Loop notes updated (after-think carry propagation, frame ordering fix). PlayerController added as new system. FuncPlat carry system with AABB detection + velocity inheritance documented. Tests table updated: all 7 existing tests marked DONE (were TODO). Dependencies updated: SDL3, OpenGL 4.5, GLAD, stb_image marked DONE. Quick reference Phase 2 steps rewritten to match actual completion state (steps 1-9 DONE, steps 10-15 TODO). Phase 2 acceptance criteria updated with partial checkmarks for working systems.",
     },
 ];
 

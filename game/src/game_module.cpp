@@ -95,18 +95,9 @@ void GameModule::loadMap(IWorld* world)
     // set up game state, wire AI, etc.
     GAME_INFO("GameModule: world loaded — wiring game logic...");
 
-    // Create a moving platform as a demonstration
-    if (m_engineAPI)
-    {
-        // Platform spawns near the player deathmatch spawn, moves up 128 units
-        Vec3 platOrigin = {-700.0f, -168.0f, 112.0f};  // Q2 Y-up coords
-        m_engineAPI->createModelEntity("func_plat", platOrigin, "models/platform/platform.obj");
-        GAME_INFO("GameModule: created func_plat at (%.1f, %.1f, %.1f)",
-                  platOrigin.x, platOrigin.y, platOrigin.z);
-    }
-
-    // Example: find the worldspawn and read map properties
-    // find player spawns, register think callbacks on items, etc.
+    // func_plat entities are placed as brush entities in TrenchBroom.
+    // The engine renders them with origin offset each frame.
+    // No runtime entity creation needed for static map entities.
 }
 
 // -----------------------------------------------------------------------

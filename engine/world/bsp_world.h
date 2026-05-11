@@ -44,6 +44,8 @@ public:
     Vec3        getSpawnOrigin()   const override;
     Vec3        getSpawnAngles()   const override;
     const char* getEntityString()  const override;
+    Vec3        getBModelOrigin(int modelIndex) const override;
+    void        getBModelBounds(int modelIndex, Vec3& mins, Vec3& maxs) const override;
 
     // ---- Pass-through to IBSPCollisionWorld (for IPhysicsWorld) -------
     // Physics still needs IBSPCollisionWorld* — expose it directly so

@@ -22,6 +22,9 @@ namespace nova
 // Global entity list — used by EntityFactory, MapLoader, engine
 EntityList g_entityList;
 
+// Global property store — single definition (avoid cross-TU duplication)
+PropertyStore g_propertyStore;
+
 // -----------------------------------------------------------------------
 // EntityList constructor
 // -----------------------------------------------------------------------
@@ -86,9 +89,6 @@ EntityHandle EntityList::create(const char *classname)
 
     // Look up entity class from registry
     e.entityClass = g_entityClasses.find(classname);
-    if (e.entityClass)
-        fprintf(stdout, "EntityList: entity[%d] class='%s' -> EntityClass='%s'\n",
-                id.index(), classname, e.entityClass->classname());
 
     // Mark slot active
     m_active[id.index()] = 1;
@@ -127,6 +127,9 @@ void EntityList::destroy(EntityHandle handle)
     e.state = STATE_FREE;
     m_active[idx] = 0;
     --m_activeCount;
+
+    // Clean up properties to prevent memory leak
+    g_propertyStore.clear(idx);
 
     // Increment generation for safety
     uint16_t newGen = e.handle.generation() + 1;
@@ -212,13 +215,25 @@ void EntityList::iterateByClassname(const char *classname, IterateFn func)
 // -----------------------------------------------------------------------
 void EntityList::think(float dt)
 {
+    // Reset carry flag for all entities before this frame's think
     for (size_t i = 0; i < kMaxEntities; ++i)
     {
-        if (!m_active[i])
-            continue;
+        Entity& e = m_entities[i];
+        if (e.state == STATE_ALIVE)
+            e.carriedThisFrame = 0;
+    }
 
+    for (size_t i = 0; i < kMaxEntities; ++i)
+    {
         Entity& e = m_entities[i];
         if (e.state != STATE_ALIVE) continue;
+
+        // Respect nextThink timing (countdown style until proper game clock exists)
+        if (e.nextThink > 0.0f)
+        {
+            e.nextThink -= dt;
+            continue;
+        }
 
         if (e.entityClass)
             e.entityClass->onThink(&e, dt);

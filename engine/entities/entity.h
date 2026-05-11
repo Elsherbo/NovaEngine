@@ -81,9 +81,27 @@ struct Entity
     Vec3 maxs;         // AABB max corner
 
     // ---- Rendering ----
-    int    modelIndex = 0;    // gロmodel index (0 = none)
+    int    modelIndex = 0;    // model index (0 = none)
     int    skin = 0;          // skin number
     char   animRequest[32];   // pending anim name set by game before model loaded
+
+    // ---- Entity Links ----
+    char   target[32];        // entity to trigger when activated
+    char   targetname[32];    // name this entity is targeted by
+
+    // ---- AI / Per-entity state (not shared across entities) ----
+    float  aiThinkTimer = 0.0f;
+    uint8_t aiState = 0;      // 0=idle, 1=chasing, etc. (game-defined)
+    uint8_t carriedThisFrame = 0; // reset each think pass, prevents double-carry
+
+    // ---- FuncPlat state (per-entity, avoids singleton bug) ----
+    Vec3   platStartPos   = Vec3::zero();
+    Vec3   platTargetPos  = Vec3::zero();
+    float  platHeight     = 64.0f;
+    float  platSpeed      = 100.0f;
+    float  platWait       = 2.0f;
+    float  platWaitTimer  = 1.0f;
+    uint8_t platState     = 0;  // 0=IDLE_BOTTOM, 1=MOVING_UP, 2=WAITING_TOP, 3=MOVING_DOWN
 
     // ---- Physics ----
     float gravity = 1.0f;    // gravity multiplier
@@ -171,5 +189,10 @@ inline AABB getAABB(const Entity& e)
 {
     return { e.origin + e.mins, e.origin + e.maxs };
 }
+
+// ABI safety: engine and game DLL must agree on Entity layout.
+// If this fires, both binaries need recompilation from the same header.
+// Expected size on MSVC x64 with alignas(16) Vec3 = 480 bytes.
+static_assert(sizeof(Entity) == 480, "Entity struct size changed — verify ABI compatibility between engine and game DLL");
 
 } // namespace nova

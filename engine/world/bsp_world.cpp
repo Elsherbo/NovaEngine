@@ -138,6 +138,27 @@ const char* BSPWorld::getEntityString() const
     return m_bsp ? m_bsp->getEntityString() : "";
 }
 
+Vec3 BSPWorld::getBModelOrigin(int modelIndex) const
+{
+    if (!m_bsp || modelIndex < 0 || modelIndex >= m_bsp->modelCount())
+        return Vec3::zero();
+    const BSPModel& model = m_bsp->models()[modelIndex];
+    return Vec3{model.origin[0], model.origin[1], model.origin[2]};
+}
+
+void BSPWorld::getBModelBounds(int modelIndex, Vec3& mins, Vec3& maxs) const
+{
+    if (!m_bsp || modelIndex < 0 || modelIndex >= m_bsp->modelCount())
+    {
+        mins = Vec3::zero();
+        maxs = Vec3::zero();
+        return;
+    }
+    const BSPModel& model = m_bsp->models()[modelIndex];
+    mins = Vec3{model.mins[0], model.mins[1], model.mins[2]};
+    maxs = Vec3{model.maxs[0], model.maxs[1], model.maxs[2]};
+}
+
 // ---------------------------------------------------------------------------
 // getPVS — cached RLE decompression
 //
